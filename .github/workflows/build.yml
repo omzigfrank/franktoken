@@ -1,0 +1,63 @@
+name: Build installers
+
+# Build Windows / macOS / Linux installers and attach them to a GitHub Release.
+# Trigger by pushing a tag like v0.1.0, or run manually from the Actions tab.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            cmd: npm run dist:win
+          - os: macos-latest
+            cmd: npm run dist:mac
+          - os: ubuntu-latest
+            cmd: npm run dist:linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build
+        run: ${{ matrix.cmd }}
+        env:
+          # Disable code-signing in CI (no certificates configured).
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: franktoken-${{ matrix.os }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
