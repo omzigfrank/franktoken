@@ -33,7 +33,7 @@ export default function ProviderView({ s, rangeLbl = '30D' }) {
             <div className="card">
               <h3>Rate-limit windows</h3>
               <div className="ring-wrap" style={{ marginTop: 8 }}>
-                <Ring percent={primary?.usedPercent || 0} caption={primary?.label || ''} />
+                <Ring percent={primary ? primary.usedPercent : null} caption={primary?.label || ''} />
                 <div style={{ flex: 1 }}>
                   {s.windows.length === 0 ? (
                     <div className="sub">No window data reported.</div>

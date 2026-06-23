@@ -28,7 +28,15 @@ export function TokenArea({ data, color = '#6ea8fe' }) {
           itemStyle={{ color: '#e7ecf3' }}
           contentStyle={{ background: '#0e131b', border: '1px solid #232b39', borderRadius: 10, color: '#e7ecf3' }}
         />
-        <Area type="monotone" dataKey="total" stroke={color} strokeWidth={2} fill={`url(#g-${color})`} />
+        <Area
+          type="monotone"
+          dataKey="total"
+          stroke={color}
+          strokeWidth={2}
+          fill={`url(#g-${color})`}
+          dot={d.length <= 2 ? { r: 4, fill: color, stroke: color } : false}
+          isAnimationActive={false}
+        />
       </AreaChart>
     </ResponsiveContainer>
   )

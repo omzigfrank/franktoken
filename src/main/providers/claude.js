@@ -207,14 +207,31 @@ export default {
         base.windowsStale = true
       }
     } else {
-      // No live data ever obtained: show "unknown" windows rather than a
-      // misleading token-volume percentage.
+      // Live API unavailable: show an ESTIMATED consumption gauge from local
+      // token volume so usage is still visible (clearly labeled "est.").
+      const mkWindow = (id, label, minutes, budget) => {
+        const start = now - minutes * 60_000
+        const inWin = events.filter((e) => e.ts >= start)
+        const used = inWin.reduce((s, e) => s + e.total, 0)
+        const oldest = inWin.length ? Math.min(...inWin.map((e) => e.ts)) : null
+        return {
+          id,
+          label: `${label} (est.)`,
+          usedPercent: budget ? Math.min(100, (used / budget) * 100) : null,
+          windowMinutes: minutes,
+          resetsAt: oldest ? oldest + minutes * 60_000 : null,
+          estimated: true,
+          usedTokens: used,
+          budgetTokens: budget
+        }
+      }
       base.windows = [
-        { id: 'five_hour', label: '5-Hour Limit', usedPercent: null, windowMinutes: 300, resetsAt: null, unknown: true },
-        { id: 'seven_day', label: 'Weekly · all models', usedPercent: null, windowMinutes: 10080, resetsAt: null, unknown: true }
+        mkWindow('five_hour', '5-Hour Window', 300, BUDGET['5h']),
+        mkWindow('seven_day', 'Weekly Window', 10080, BUDGET.weekly)
       ]
-      base.windowsNote = `${reasonText[live?.reason] || 'Live limits unavailable'}. Limits will appear once available.`
-      base.windowsUnknown = true
+      base.windowsEstimated = true
+      const why = reasonText[live?.reason] || 'Live limits unavailable'
+      base.windowsNote = `${why}. Showing an estimate from local tokens — run \`claude\` (or /login) to restore exact live limits.`
     }
 
     const sum = summarize(events, r, { costEstimated: true })

@@ -1,6 +1,6 @@
 {
   "name": "franktoken",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "FrankToken — a cross-platform, OS-agnostic, GUI-rich tray app that shows AI coding usage limits, tokens, and cost for Windows/macOS/Linux.",
   "main": "out/main/index.js",
   "author": "Frank Diaz",
