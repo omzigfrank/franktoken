@@ -138,48 +138,52 @@ export default {
       return base
     }
 
+    base.available = true
+
     const days = Math.max(2, Math.ceil((Date.now() - r.from) / 86_400_000) + 1)
     const files = listJsonl(PROJECTS, { days, limit: 600 })
-    if (files.length === 0) {
-      base.available = true
-      base.error = 'No Claude Code sessions found for this range.'
-      return base
-    }
 
-    base.meta.sessions = files.length
-    base.meta.lastActivity = files[0].mtimeMs
-
+    // No local sessions in the selected range is NOT a fatal state: the
+    // rate-limit windows below come from the live API and reflect "right now"
+    // plan usage independent of the chosen historical range, so we still want
+    // to render them. We just note that the token/cost charts have no data.
     const events = [] // granular per-message usage events
     let model = null
     let lastTs = 0
 
-    for (const f of files) {
-      await readJsonlLines(f.path, (obj) => {
-        if (!obj) return
-        const msg = obj.message || obj
-        const usage = msg?.usage
-        if (!usage) return
-        const m = msg.model || obj.model
-        if (m && !/<synthetic>/.test(m)) model = m
+    if (files.length === 0) {
+      base.error = 'No Claude Code sessions found for this range.'
+    } else {
+      base.meta.sessions = files.length
+      base.meta.lastActivity = files[0].mtimeMs
 
-        const input = usage.input_tokens || 0
-        const output = usage.output_tokens || 0
-        const cacheWrite = usage.cache_creation_input_tokens || 0
-        const cacheRead = usage.cache_read_input_tokens || 0
-        const total = input + output + cacheWrite + cacheRead
-        if (total === 0) return
+      for (const f of files) {
+        await readJsonlLines(f.path, (obj) => {
+          if (!obj) return
+          const msg = obj.message || obj
+          const usage = msg?.usage
+          if (!usage) return
+          const m = msg.model || obj.model
+          if (m && !/<synthetic>/.test(m)) model = m
 
-        const ts = obj.timestamp ? Date.parse(obj.timestamp) : f.mtimeMs
-        if (ts > lastTs) lastTs = ts
+          const input = usage.input_tokens || 0
+          const output = usage.output_tokens || 0
+          const cacheWrite = usage.cache_creation_input_tokens || 0
+          const cacheRead = usage.cache_read_input_tokens || 0
+          const total = input + output + cacheWrite + cacheRead
+          if (total === 0) return
 
-        const usd = estimateCost({ input, output, cacheWrite, cacheRead }, m || 'claude-sonnet-4')
-        events.push({ ts, input, output, cachedInput: cacheRead, reasoning: 0, total, usd })
-      })
+          const ts = obj.timestamp ? Date.parse(obj.timestamp) : f.mtimeMs
+          if (ts > lastTs) lastTs = ts
+
+          const usd = estimateCost({ input, output, cacheWrite, cacheRead }, m || 'claude-sonnet-4')
+          events.push({ ts, input, output, cachedInput: cacheRead, reasoning: 0, total, usd })
+        })
+      }
+
+      base.meta.model = model
+      base.meta.lastActivity = lastTs || base.meta.lastActivity
     }
-
-    base.meta.model = model
-    base.meta.lastActivity = lastTs || base.meta.lastActivity
-    base.available = true
 
     const now = Date.now()
 
