@@ -1,8 +1,9 @@
 // Claude Code provider.
 // - Rate-limit windows: LIVE from https://api.anthropic.com/api/oauth/usage,
 //   the same endpoint Claude Code uses, authed with the local OAuth token in
-//   ~/.claude/.credentials.json. We only READ that token (never refresh/rewrite
-//   it) so we don't clobber Claude Code's own credentials.
+//   ~/.claude/.credentials.json. When the access token expires we refresh it
+//   with the stored refresh token and persist the rotated pair back to the
+//   same file, so live limits keep working without manual /login.
 // - Tokens & cost charts: parsed from ~/.claude/projects/<slug>/<session>.jsonl.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -12,6 +13,9 @@ const ROOT = path.join(HOME, '.claude')
 const PROJECTS = path.join(ROOT, 'projects')
 const CREDENTIALS = path.join(ROOT, '.credentials.json')
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+const TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token'
+// Claude Code's public OAuth client id (PKCE app — not a secret).
+const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 
 // Soft reference budgets (tokens) — only used as a FALLBACK when the live
 // usage API is unavailable (no/expired token, offline).
@@ -22,12 +26,81 @@ function readToken() {
     const cred = JSON.parse(fs.readFileSync(CREDENTIALS, 'utf8'))
     const o = cred.claudeAiOauth || cred
     if (!o?.accessToken) return null
-    // expiresAt is epoch ms; treat as expired 60s early
-    if (o.expiresAt && o.expiresAt < Date.now() + 60_000) return { expired: true }
-    return { token: o.accessToken }
+    return {
+      token: o.accessToken,
+      // expiresAt is epoch ms; treat as expired 2 min early so we refresh
+      // before the API starts rejecting us mid-poll.
+      expired: !!(o.expiresAt && o.expiresAt < Date.now() + 120_000),
+      hasRefresh: !!o.refreshToken
+    }
   } catch {
     return null
   }
+}
+
+// --- automatic token refresh -------------------------------------------- //
+// Single-flight + failure backoff so concurrent polls can't stampede the
+// token endpoint or burn a rotated refresh token twice.
+let refreshInFlight = null
+let lastRefreshFailAt = 0
+const REFRESH_FAIL_BACKOFF = 10 * 60_000 // after a failure, wait 10 min
+
+async function refreshAccessToken() {
+  if (refreshInFlight) return refreshInFlight
+  if (Date.now() - lastRefreshFailAt < REFRESH_FAIL_BACKOFF) return null
+  refreshInFlight = (async () => {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CREDENTIALS, 'utf8'))
+      const o = raw.claudeAiOauth || raw
+      if (!o?.refreshToken) return null
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), 10_000)
+      const res = await fetch(TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          grant_type: 'refresh_token',
+          refresh_token: o.refreshToken,
+          client_id: OAUTH_CLIENT_ID
+        }),
+        signal: ctrl.signal
+      })
+      clearTimeout(t)
+      if (!res.ok) {
+        lastRefreshFailAt = Date.now()
+        return null
+      }
+      const d = await res.json()
+      if (!d.access_token) {
+        lastRefreshFailAt = Date.now()
+        return null
+      }
+      // Re-read the file just before writing: Claude Code may have rewritten
+      // it while we were talking to the token endpoint — merge, don't clobber.
+      let cur
+      try {
+        cur = JSON.parse(fs.readFileSync(CREDENTIALS, 'utf8'))
+      } catch {
+        cur = raw
+      }
+      const curO = cur.claudeAiOauth || cur
+      const upd = {
+        ...curO,
+        accessToken: d.access_token,
+        expiresAt: Date.now() + (d.expires_in || 3600) * 1000
+      }
+      if (d.refresh_token) upd.refreshToken = d.refresh_token
+      const next = cur.claudeAiOauth ? { ...cur, claudeAiOauth: upd } : upd
+      fs.writeFileSync(CREDENTIALS, JSON.stringify(next))
+      return d.access_token
+    } catch {
+      lastRefreshFailAt = Date.now()
+      return null
+    } finally {
+      refreshInFlight = null
+    }
+  })()
+  return refreshInFlight
 }
 
 // Map an API window object {utilization, resets_at} -> our Window shape.
@@ -96,25 +169,39 @@ async function fetchLiveWindows() {
     return { ok: false, reason: lastFailure?.reason || 'cooldown' }
   }
   lastAttemptAt = now
-  const auth = readToken()
+  let auth = readToken()
+  // Expired (or missing) access token but a refresh token on disk: refresh
+  // automatically and persist, so live limits never require a manual /login.
+  if ((!auth || auth.expired || !auth.token) && (auth?.hasRefresh || !auth)) {
+    const fresh = await refreshAccessToken()
+    if (fresh) auth = { token: fresh, expired: false }
+  }
   if (!auth || auth.expired || !auth.token) {
     const reason = auth?.expired ? 'token-expired' : 'no-token'
     lastFailure = { reason }
     return liveCache ? { ok: true, ...liveCache, stale: true, reason } : { ok: false, reason }
   }
   try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 8000)
-    const res = await fetch(USAGE_URL, {
-      headers: {
-        Authorization: `Bearer ${auth.token}`,
-        'anthropic-beta': 'oauth-2025-04-20',
-        'Content-Type': 'application/json',
-        'User-Agent': 'franktoken'
-      },
-      signal: ctrl.signal
-    })
-    clearTimeout(t)
+    const doFetch = (token) => {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), 8000)
+      return fetch(USAGE_URL, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'anthropic-beta': 'oauth-2025-04-20',
+          'Content-Type': 'application/json',
+          'User-Agent': 'franktoken'
+        },
+        signal: ctrl.signal
+      }).finally(() => clearTimeout(t))
+    }
+    let res = await doFetch(auth.token)
+    // Server rejected the token even though it looked valid locally (e.g.
+    // revoked or clock skew): refresh once and retry.
+    if (res.status === 401) {
+      const fresh = await refreshAccessToken()
+      if (fresh) res = await doFetch(fresh)
+    }
     if (!res.ok) {
       const reason = res.status === 429 ? 'rate-limited' : `http-${res.status}`
       lastFailure = { reason }
@@ -235,7 +322,7 @@ export default {
     const live = await fetchLiveWindows()
     const reasonText = {
       'rate-limited': 'Live limits temporarily rate-limited',
-      'token-expired': 'OAuth token expired — open Claude Code to refresh',
+      'token-expired': 'OAuth token expired and auto-refresh failed — run `claude` and /login once',
       'no-token': 'No Claude OAuth token found',
       network: 'Network unavailable'
     }
