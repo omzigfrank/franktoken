@@ -180,7 +180,7 @@ export default {
           if (ts > lastTs) lastTs = ts
 
           const usd = estimateCost({ input, output, cacheWrite, cacheRead }, m || 'claude-sonnet-4')
-          events.push({ ts, input, output, cachedInput: cacheRead, reasoning: 0, total, usd })
+          events.push({ ts, input, output, cachedInput: cacheRead, reasoning: 0, total, usd, model: m || null })
         })
       }
 
@@ -250,6 +250,17 @@ export default {
     base.cost = sum.cost
     base.series = sum.series
     base.range = sum.range
+
+    // Per-model breakdown so the UI can filter by clicking a model badge.
+    // Models with zero tokens inside the range are dropped (recently-touched
+    // files can carry old events from models not actually used in the range).
+    base.byModel = {}
+    for (const mName of base.meta.models || []) {
+      const ms = summarize(events.filter((e) => e.model === mName), r, { costEstimated: true })
+      if (ms.tokens.total > 0) base.byModel[mName] = { tokens: ms.tokens, cost: ms.cost, series: ms.series }
+    }
+    base.meta.models = (base.meta.models || []).filter((m) => base.byModel[m])
+    base.meta.model = base.meta.models[0] || null
 
     return base
   }

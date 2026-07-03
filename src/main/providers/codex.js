@@ -124,7 +124,7 @@ export default {
           { input: d.input - d.cachedInput, output: d.output, cacheRead: d.cachedInput },
           model || 'gpt-5-codex'
         )
-        events.push({ ts: s.ts, ...d, usd })
+        events.push({ ts: s.ts, ...d, usd, model: model || null })
       }
     }
 
@@ -148,6 +148,16 @@ export default {
     base.cost = sum.cost
     base.series = sum.series
     base.range = sum.range
+
+    // Per-model breakdown so the UI can filter by clicking a model badge.
+    // Models with zero tokens inside the range are dropped.
+    base.byModel = {}
+    for (const mName of models) {
+      const ms = summarize(events.filter((e) => e.model === mName), r, { costEstimated: true })
+      if (ms.tokens.total > 0) base.byModel[mName] = { tokens: ms.tokens, cost: ms.cost, series: ms.series }
+    }
+    base.meta.models = models.filter((m) => base.byModel[m])
+    base.meta.model = base.meta.models[0] || base.meta.model
     return base
   }
 }
