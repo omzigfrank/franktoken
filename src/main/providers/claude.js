@@ -148,7 +148,7 @@ export default {
     // plan usage independent of the chosen historical range, so we still want
     // to render them. We just note that the token/cost charts have no data.
     const events = [] // granular per-message usage events
-    let model = null
+    const modelTokens = new Map() // model -> total tokens (for badge ordering)
     let lastTs = 0
 
     if (files.length === 0) {
@@ -164,7 +164,6 @@ export default {
           const usage = msg?.usage
           if (!usage) return
           const m = msg.model || obj.model
-          if (m && !/<synthetic>/.test(m)) model = m
 
           const input = usage.input_tokens || 0
           const output = usage.output_tokens || 0
@@ -172,6 +171,10 @@ export default {
           const cacheRead = usage.cache_read_input_tokens || 0
           const total = input + output + cacheWrite + cacheRead
           if (total === 0) return
+
+          if (m && !/<synthetic>/.test(m)) {
+            modelTokens.set(m, (modelTokens.get(m) || 0) + total)
+          }
 
           const ts = obj.timestamp ? Date.parse(obj.timestamp) : f.mtimeMs
           if (ts > lastTs) lastTs = ts
@@ -181,7 +184,11 @@ export default {
         })
       }
 
-      base.meta.model = model
+      // All models seen in range, heaviest-usage first. meta.model stays the
+      // top one for back-compat; meta.models carries the full list for the UI.
+      const models = [...modelTokens.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m)
+      base.meta.model = models[0] || null
+      base.meta.models = models
       base.meta.lastActivity = lastTs || base.meta.lastActivity
     }
 

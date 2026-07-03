@@ -69,7 +69,8 @@ export default {
     const events = [] // granular incremental usage events
     let latestWindows = null
     let latestWindowTs = 0
-    let model = null
+    let model = null // current session's model (for pricing)
+    const modelCounts = new Map() // model -> occurrences across range
 
     for (const f of files) {
       // token_count is cumulative within a session -> diff into increments.
@@ -78,8 +79,10 @@ export default {
       await readJsonlLines(f.path, (obj) => {
         if (!obj) return
         const type = obj.type || obj.payload?.type
-        if (!model) {
-          model = obj.payload?.model || obj.model || obj.payload?.turn_context?.model || model
+        const m = obj.payload?.model || obj.model || obj.payload?.turn_context?.model
+        if (m) {
+          model = m // latest seen wins for pricing within this session
+          modelCounts.set(m, (modelCounts.get(m) || 0) + 1)
         }
         const rl = obj.payload?.rate_limits || obj.rate_limits || obj.info?.rate_limits
         if (rl && (rl.primary || rl.secondary)) {
@@ -125,7 +128,10 @@ export default {
       }
     }
 
-    base.meta.model = model
+    // All models seen in range, most-used first; meta.model stays the top one.
+    const models = [...modelCounts.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m)
+    base.meta.model = models[0] || model
+    base.meta.models = models
     base.available = true
 
     if (latestWindows) {

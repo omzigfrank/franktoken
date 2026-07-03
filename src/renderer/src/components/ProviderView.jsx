@@ -19,7 +19,9 @@ export default function ProviderView({ s, rangeLbl = '30D' }) {
       <div className="section-title">
         <h2 style={{ color: s.color }}>{s.name}</h2>
         <StatusPill s={s} />
-        {s.meta?.model ? <span className="pill">{s.meta.model}</span> : null}
+        {(s.meta?.models?.length ? s.meta.models : s.meta?.model ? [s.meta.model] : []).map((m) => (
+          <span key={m} className="pill">{m}</span>
+        ))}
         <span className="pill">{s.meta?.sessions || 0} sessions · {fmtAgo(s.meta?.lastActivity)}</span>
       </div>
 
