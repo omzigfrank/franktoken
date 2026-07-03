@@ -43,6 +43,38 @@ function apiWindow(id, label, w) {
   }
 }
 
+// Newer API shape: a generic limits[] array. Per-model weekly windows moved
+// here as kind:"weekly_scoped" with scope.model.display_name (the legacy
+// seven_day_opus/seven_day_sonnet fields are null now).
+function limitsWindows(limits) {
+  if (!Array.isArray(limits)) return []
+  const out = []
+  for (const l of limits) {
+    if (l?.percent == null) continue
+    if (l.kind === 'session') {
+      out.push({
+        id: 'five_hour',
+        label: '5-Hour Limit',
+        usedPercent: Number(l.percent) || 0,
+        windowMinutes: 300,
+        resetsAt: l.resets_at ? Date.parse(l.resets_at) : null,
+        estimated: false
+      })
+    } else if (l.group === 'weekly') {
+      const scopeName = l.scope?.model?.display_name || l.scope?.surface || null
+      out.push({
+        id: scopeName ? `weekly_${scopeName.toLowerCase().replace(/\W+/g, '_')}` : 'seven_day',
+        label: scopeName ? `Weekly · ${scopeName}` : 'Weekly · all models',
+        usedPercent: Number(l.percent) || 0,
+        windowMinutes: 10080,
+        resetsAt: l.resets_at ? Date.parse(l.resets_at) : null,
+        estimated: false
+      })
+    }
+  }
+  return out
+}
+
 // Cache the last successful live response across polls so transient failures
 // (429 rate limiting, brief network blips) don't wipe the real numbers.
 let liveCache = null // { windows, extra, at }
@@ -91,12 +123,17 @@ async function fetchLiveWindows() {
     }
     lastFailure = null
     const d = await res.json()
-    const windows = [
-      apiWindow('five_hour', '5-Hour Limit', d.five_hour),
-      apiWindow('seven_day', 'Weekly · all models', d.seven_day),
-      apiWindow('seven_day_opus', 'Weekly · Opus', d.seven_day_opus),
-      apiWindow('seven_day_sonnet', 'Weekly · Sonnet', d.seven_day_sonnet)
-    ].filter(Boolean)
+    // Prefer the newer limits[] array (carries per-model scoped windows);
+    // fall back to the legacy top-level fields for older API responses.
+    let windows = limitsWindows(d.limits)
+    if (windows.length === 0) {
+      windows = [
+        apiWindow('five_hour', '5-Hour Limit', d.five_hour),
+        apiWindow('seven_day', 'Weekly · all models', d.seven_day),
+        apiWindow('seven_day_opus', 'Weekly · Opus', d.seven_day_opus),
+        apiWindow('seven_day_sonnet', 'Weekly · Sonnet', d.seven_day_sonnet)
+      ].filter(Boolean)
+    }
     liveCache = { windows, extra: d.extra_usage || null, at: Date.now() }
     return { ok: true, ...liveCache }
   } catch {
