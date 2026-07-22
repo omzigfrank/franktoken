@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { claudeUsageEvent, dedupeClaudeUsageEvents } from '../src/main/providers/claude.js'
+import { claudeUsageEvent, dedupeClaudeUsageEvents, selectClaudeHistoryFiles } from '../src/main/providers/claude.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
 import { summarize } from '../src/main/providers/util.js'
 
@@ -28,6 +28,17 @@ test('Claude usage keeps one complete snapshot per message id', () => {
   assert.equal(events.length, 1)
   assert.equal(events[0].total, 82)
   assert.equal(events[0].ts, complete.ts)
+})
+
+test('Claude history discovery keeps stored sessions visible outside a narrow range', () => {
+  const now = Date.parse('2026-07-22T12:00:00Z')
+  const files = [
+    { path: 'recent.jsonl', mtimeMs: now - 12 * 60 * 60_000 },
+    { path: 'older.jsonl', mtimeMs: now - 5 * 86_400_000 }
+  ]
+
+  assert.deepEqual(selectClaudeHistoryFiles(files, 2, now), [files[0]])
+  assert.deepEqual(selectClaudeHistoryFiles(files, Number.POSITIVE_INFINITY, now), files)
 })
 
 test('OpenAI cached tokens are a subset of input, not extra total usage', () => {
@@ -81,3 +92,4 @@ test('summary preserves cache-write tokens without inflating provider totals', (
     total: 18
   })
 })
+

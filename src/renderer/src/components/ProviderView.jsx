@@ -22,6 +22,11 @@ export default function ProviderView({ s, rangeLbl = '30D' }) {
   const tokens = filtered ? filtered.tokens : s.tokens
   const cost = filtered ? filtered.cost : s.cost
   const series = filtered ? filtered.series : s.series
+  const sessions = s.meta?.sessions || 0
+  const totalSessions = s.meta?.totalSessions ?? sessions
+  const sessionSummary = totalSessions > sessions
+    ? `${sessions} in ${rangeLbl} · ${totalSessions} stored · last ${fmtAgo(s.meta?.lastActivity)}`
+    : `${sessions} sessions · ${fmtAgo(s.meta?.lastActivity)}`
   return (
     <div className="grid" style={{ gap: 14 }}>
       <div className="section-title">
@@ -46,7 +51,7 @@ export default function ProviderView({ s, rangeLbl = '30D' }) {
             </span>
           )
         })}
-        <span className="pill">{s.meta?.sessions || 0} sessions · {fmtAgo(s.meta?.lastActivity)}</span>
+        <span className="pill">{sessionSummary}</span>
         {modelFilter ? (
           <span className="pill est" style={{ cursor: 'pointer' }} onClick={() => setModelFilter(null)}>
             filtering: {modelFilter} ✕
@@ -110,3 +115,4 @@ export default function ProviderView({ s, rangeLbl = '30D' }) {
     </div>
   )
 }
+
