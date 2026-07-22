@@ -81,7 +81,7 @@ export function bucketOf(ms, granularity) {
  */
 export function summarize(events, range, { costEstimated = true } = {}) {
   const r = normalizeRange(range)
-  const tokens = { input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0 }
+  const tokens = { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 }
   let costTotal = 0
   let costToday = 0
   const todayKey = dayKey(Date.now())
@@ -96,6 +96,7 @@ export function summarize(events, range, { costEstimated = true } = {}) {
     }
     tokens.input += e.input || 0
     tokens.cachedInput += e.cachedInput || 0
+    tokens.cacheWrite += e.cacheWrite || 0
     tokens.output += e.output || 0
     tokens.reasoning += e.reasoning || 0
     tokens.total += e.total || 0
@@ -127,7 +128,7 @@ export function summarize(events, range, { costEstimated = true } = {}) {
 }
 
 /** Recursively list *.jsonl files under dir, newest-first, modified within `days`. */
-export function listJsonl(dir, { days = 30, limit = 400 } = {}) {
+export function listJsonl(dir, { days = 30, limit = Infinity } = {}) {
   const out = []
   const cutoff = Date.now() - days * 86_400_000
   const walk = (d) => {

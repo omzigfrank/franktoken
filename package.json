@@ -8,6 +8,7 @@
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
+    "test": "node --test",
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "dist": "electron-vite build && electron-builder",

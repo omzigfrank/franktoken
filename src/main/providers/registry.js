@@ -29,7 +29,7 @@ export async function fetchAll(range) {
           available: false,
           error: String(err?.message || err),
           windows: [],
-          tokens: { input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0 },
+          tokens: { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 },
           cost: { today: 0, total: 0, currency: 'USD', estimated: true },
           series: { tokensByDay: [], costByDay: [] },
           meta: { lastActivity: null, sessions: 0, model: null }
