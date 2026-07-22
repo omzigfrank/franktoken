@@ -340,7 +340,6 @@ export default {
     const candidates = [] // raw transcript rows; deduplicated below by API message id
     let events = [] // one complete event per unique model response
     const modelTokens = new Map() // model -> total tokens (for badge ordering)
-    let lastTs = 0
 
     if (files.length > 0) {
       for (const f of files) {
@@ -360,7 +359,6 @@ export default {
         if (event.ts >= r.from && event.ts <= r.to && m && !/<synthetic>/.test(m)) {
           modelTokens.set(m, (modelTokens.get(m) || 0) + event.total)
         }
-        if (event.ts > lastTs) lastTs = event.ts
         event.usd = estimateCost(
           {
             input: event.input,
