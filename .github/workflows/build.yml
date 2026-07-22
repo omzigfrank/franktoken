@@ -34,7 +34,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Build
-        run: ${{ matrix.cmd }}
+        run: ${{ matrix.cmd }} -- --publish never
         env:
           # Disable code-signing in CI (no certificates configured).
           CSC_IDENTITY_AUTO_DISCOVERY: false
