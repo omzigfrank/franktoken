@@ -1,6 +1,6 @@
 {
   "name": "franktoken",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "FrankToken — a cross-platform, OS-agnostic, GUI-rich tray app that shows AI coding usage limits, tokens, and cost for Windows/macOS/Linux.",
   "main": "out/main/index.js",
   "author": "Frank Diaz",
@@ -33,9 +33,27 @@
   "build": {
     "appId": "com.frankdiaz.franktoken",
     "productName": "FrankToken",
-    "files": ["out/**/*", "resources/**/*"],
-    "win": { "target": ["nsis"], "signAndEditExecutable": false },
-    "mac": { "target": ["dmg"], "category": "public.app-category.developer-tools" },
-    "linux": { "target": ["AppImage"], "category": "Development" }
+    "files": [
+      "out/**/*",
+      "resources/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": false
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development"
+    }
   }
 }
