@@ -17,6 +17,9 @@ consumption, and estimated cost across providers. Runs on **Windows, macOS, and 
   - **Overview** page aggregating every provider.
 - **Privacy-first**: everything is parsed **on-device** from local CLI session files. Nothing is
   uploaded.
+- **Accurate local totals**: every transcript in the selected range is scanned. Claude streaming
+  snapshots and copied branch history are deduplicated by message ID, while Codex cumulative
+  counters are converted into per-event deltas without double-counting cached input.
 
 ## Providers (v1)
 
@@ -26,6 +29,8 @@ consumption, and estimated cost across providers. Runs on **Windows, macOS, and 
 | **Claude Code** | `api/oauth/usage` (live) + `~/.claude/projects/**/*.jsonl` | Live | real 5h / weekly / per-model limits via the OAuth token in `~/.claude/.credentials.json` (read-only, never rewritten); tokens & cost charts from transcripts. Falls back to a token-volume estimate if the token is missing/expired. |
 
 Costs are **estimates** from a built-in pricing table — treat as guidance, not billing.
+Token totals cover local Claude Code and OpenAI Codex activity. They do not include unrelated
+Anthropic or OpenAI API usage from other applications or organization-level API keys.
 
 ## Add a provider (plugin interface)
 

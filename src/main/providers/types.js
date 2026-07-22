@@ -15,7 +15,7 @@
 //     available: boolean,
 //     error: string | null,
 //     windows: Window[],               // rate-limit windows (5h / weekly / etc.)
-//     tokens: { input, cachedInput, output, reasoning, total },
+//     tokens: { input, cachedInput, cacheWrite, output, reasoning, total },
 //     cost:   { today, total, currency, estimated: boolean },
 //     series: {                        // for charts
 //       tokensByDay: [{ date, total }],

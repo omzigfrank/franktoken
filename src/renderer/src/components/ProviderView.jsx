@@ -80,8 +80,10 @@ export default function ProviderView({ s, rangeLbl = '30D' }) {
               <h3>Tokens & cost{modelFilter ? ` · ${modelFilter}` : ''}</h3>
               <div className="kpis" style={{ gridTemplateColumns: '1fr 1fr' }}>
                 <div className="kpi"><div className="k">Tokens ({rangeLbl})</div><div className="v">{fmtTokens(tokens.total)}</div></div>
+                <div className="kpi"><div className="k">Uncached input</div><div className="v">{fmtTokens(tokens.input)}</div></div>
                 <div className="kpi"><div className="k">Output</div><div className="v">{fmtTokens(tokens.output)}</div></div>
-                <div className="kpi"><div className="k">Cached input</div><div className="v">{fmtTokens(tokens.cachedInput)}</div></div>
+                <div className="kpi"><div className="k">Cache read</div><div className="v">{fmtTokens(tokens.cachedInput)}</div></div>
+                {tokens.cacheWrite > 0 ? <div className="kpi"><div className="k">Cache write</div><div className="v">{fmtTokens(tokens.cacheWrite)}</div></div> : null}
                 <div className="kpi"><div className="k">Reasoning</div><div className="v">{fmtTokens(tokens.reasoning)}</div></div>
                 <div className="kpi"><div className="k">Cost today (est.)</div><div className="v" style={{ color: '#34d399' }}>{fmtUsd(cost.today)}</div></div>
                 <div className="kpi"><div className="k">Cost {rangeLbl} (est.)</div><div className="v" style={{ color: '#34d399' }}>{fmtUsd(cost.total)}</div></div>

@@ -10,7 +10,45 @@ const ROOT = path.join(HOME, '.codex')
 const SESSIONS = path.join(ROOT, 'sessions')
 
 function emptyTokens() {
-  return { input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0 }
+  return { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 }
+}
+
+function tokenNumber(value) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+export function codexCumulativeUsage(usage) {
+  const rawInput = tokenNumber(usage?.input_tokens)
+  const cachedInput = tokenNumber(usage?.cached_input_tokens)
+  const cacheWrite = tokenNumber(usage?.cache_write_input_tokens)
+  const output = tokenNumber(usage?.output_tokens)
+  return {
+    rawInput,
+    cachedInput,
+    cacheWrite,
+    output,
+    reasoning: tokenNumber(usage?.reasoning_output_tokens),
+    total: tokenNumber(usage?.total_tokens) || rawInput + output
+  }
+}
+
+export function codexUsageDelta(current, previous = null) {
+  // A lower total means the CLI reset its cumulative counter. Treat that
+  // snapshot as a new baseline instead of silently losing the first turn.
+  const reset = previous && current.total < previous.total
+  const delta = (key) => (!previous || reset ? current[key] : Math.max(0, current[key] - previous[key]))
+  const rawInput = delta('rawInput')
+  const cachedInput = delta('cachedInput')
+  const cacheWrite = delta('cacheWrite')
+  return {
+    input: Math.max(0, rawInput - cachedInput - cacheWrite),
+    cachedInput,
+    cacheWrite,
+    output: delta('output'),
+    reasoning: delta('reasoning'),
+    total: delta('total')
+  }
 }
 
 function windowFrom(snap, id, label) {
@@ -56,7 +94,7 @@ export default {
 
     // scan enough history to cover the requested range (+1 day slack)
     const days = Math.max(2, Math.ceil((Date.now() - r.from) / 86_400_000) + 1)
-    const files = listJsonl(SESSIONS, { days, limit: 800 })
+    const files = listJsonl(SESSIONS, { days })
     if (files.length === 0) {
       base.available = true
       base.error = 'No Codex sessions found for this range.'
@@ -69,20 +107,19 @@ export default {
     const events = [] // granular incremental usage events
     let latestWindows = null
     let latestWindowTs = 0
-    let model = null // current session's model (for pricing)
-    const modelCounts = new Map() // model -> occurrences across range
+    const modelCounts = new Map() // model -> incremental tokens across range
 
     for (const f of files) {
       // token_count is cumulative within a session -> diff into increments.
       let prev = null
+      let sessionModel = null
       const snaps = [] // { ts, usage }
       await readJsonlLines(f.path, (obj) => {
         if (!obj) return
         const type = obj.type || obj.payload?.type
         const m = obj.payload?.model || obj.model || obj.payload?.turn_context?.model
         if (m) {
-          model = m // latest seen wins for pricing within this session
-          modelCounts.set(m, (modelCounts.get(m) || 0) + 1)
+          sessionModel = m
         }
         const rl = obj.payload?.rate_limits || obj.rate_limits || obj.info?.rate_limits
         if (rl && (rl.primary || rl.secondary)) {
@@ -96,41 +133,29 @@ export default {
         const usage = info?.total_token_usage || obj.payload?.total_token_usage
         if (usage && (type === 'token_count' || usage.total_tokens != null)) {
           const ts = (obj.timestamp ? Date.parse(obj.timestamp) : 0) || f.mtimeMs
-          snaps.push({ ts, usage })
+          snaps.push({ ts, usage, model: sessionModel })
         }
       })
 
       for (const s of snaps) {
-        const cur = {
-          input: s.usage.input_tokens || 0,
-          cachedInput: s.usage.cached_input_tokens || 0,
-          output: s.usage.output_tokens || 0,
-          reasoning: s.usage.reasoning_output_tokens || 0,
-          total: s.usage.total_tokens || 0
-        }
+        const cur = codexCumulativeUsage(s.usage)
         // incremental delta vs previous snapshot in this session
-        const d = prev
-          ? {
-              input: Math.max(0, cur.input - prev.input),
-              cachedInput: Math.max(0, cur.cachedInput - prev.cachedInput),
-              output: Math.max(0, cur.output - prev.output),
-              reasoning: Math.max(0, cur.reasoning - prev.reasoning),
-              total: Math.max(0, cur.total - prev.total)
-            }
-          : cur
+        const d = codexUsageDelta(cur, prev)
         prev = cur
         if (d.total === 0) continue
+        const eventModel = s.model || sessionModel || null
+        if (eventModel) modelCounts.set(eventModel, (modelCounts.get(eventModel) || 0) + d.total)
         const usd = estimateCost(
-          { input: d.input - d.cachedInput, output: d.output, cacheRead: d.cachedInput },
-          model || 'gpt-5-codex'
+          { input: d.input, output: d.output, cacheWrite: d.cacheWrite, cacheRead: d.cachedInput },
+          eventModel || 'gpt-5-codex'
         )
-        events.push({ ts: s.ts, ...d, usd, model: model || null })
+        events.push({ ts: s.ts, ...d, usd, model: eventModel })
       }
     }
 
     // All models seen in range, most-used first; meta.model stays the top one.
     const models = [...modelCounts.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m)
-    base.meta.model = models[0] || model
+    base.meta.model = models[0] || null
     base.meta.models = models
     base.available = true
 

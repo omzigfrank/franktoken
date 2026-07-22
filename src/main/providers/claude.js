@@ -230,7 +230,62 @@ async function fetchLiveWindows() {
 }
 
 function emptyTokens() {
-  return { input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0 }
+  return { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 }
+}
+
+function tokenNumber(value) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// Claude Code can persist the same API message repeatedly while streaming tool
+// calls, and copied conversation history can appear in branched transcripts.
+// Message IDs are globally unique, so retain only the most complete usage
+// snapshot for each ID. Without this, a single model call can be counted many
+// times (we have observed 10+ identical rows for one message).
+export function claudeUsageEvent(obj, fallbackTs = 0) {
+  if (!obj) return null
+  const msg = obj.message || obj
+  const usage = msg?.usage
+  if (!usage) return null
+
+  const input = tokenNumber(usage.input_tokens)
+  const output = tokenNumber(usage.output_tokens)
+  const cacheWrite = tokenNumber(usage.cache_creation_input_tokens)
+  const cacheRead = tokenNumber(usage.cache_read_input_tokens)
+  const total = input + output + cacheWrite + cacheRead
+  if (total === 0) return null
+
+  return {
+    key: msg.id ? `message:${msg.id}` : null,
+    ts: (obj.timestamp ? Date.parse(obj.timestamp) : 0) || fallbackTs,
+    input,
+    output,
+    cachedInput: cacheRead,
+    cacheWrite,
+    reasoning: 0,
+    total,
+    model: msg.model || obj.model || null
+  }
+}
+
+export function dedupeClaudeUsageEvents(candidates) {
+  const keyed = new Map()
+  const unkeyed = []
+  for (const event of candidates) {
+    if (!event?.key) {
+      if (event) unkeyed.push(event)
+      continue
+    }
+    const previous = keyed.get(event.key)
+    // Streaming snapshots grow as the response completes. Prefer the largest
+    // provider-reported total; for identical copies keep the earliest time so
+    // range boundaries reflect when the model response first completed.
+    if (!previous || event.total > previous.total || (event.total === previous.total && event.ts < previous.ts)) {
+      keyed.set(event.key, event)
+    }
+  }
+  return [...keyed.values(), ...unkeyed]
 }
 
 export default {
@@ -265,13 +320,14 @@ export default {
     base.available = true
 
     const days = Math.max(2, Math.ceil((Date.now() - r.from) / 86_400_000) + 1)
-    const files = listJsonl(PROJECTS, { days, limit: 600 })
+    const files = listJsonl(PROJECTS, { days })
 
     // No local sessions in the selected range is NOT a fatal state: the
     // rate-limit windows below come from the live API and reflect "right now"
     // plan usage independent of the chosen historical range, so we still want
     // to render them. We just note that the token/cost charts have no data.
-    const events = [] // granular per-message usage events
+    const candidates = [] // raw transcript rows; deduplicated below by API message id
+    let events = [] // one complete event per unique model response
     const modelTokens = new Map() // model -> total tokens (for badge ordering)
     let lastTs = 0
 
@@ -284,28 +340,27 @@ export default {
       for (const f of files) {
         await readJsonlLines(f.path, (obj) => {
           if (!obj) return
-          const msg = obj.message || obj
-          const usage = msg?.usage
-          if (!usage) return
-          const m = msg.model || obj.model
-
-          const input = usage.input_tokens || 0
-          const output = usage.output_tokens || 0
-          const cacheWrite = usage.cache_creation_input_tokens || 0
-          const cacheRead = usage.cache_read_input_tokens || 0
-          const total = input + output + cacheWrite + cacheRead
-          if (total === 0) return
-
-          if (m && !/<synthetic>/.test(m)) {
-            modelTokens.set(m, (modelTokens.get(m) || 0) + total)
-          }
-
-          const ts = obj.timestamp ? Date.parse(obj.timestamp) : f.mtimeMs
-          if (ts > lastTs) lastTs = ts
-
-          const usd = estimateCost({ input, output, cacheWrite, cacheRead }, m || 'claude-sonnet-4')
-          events.push({ ts, input, output, cachedInput: cacheRead, reasoning: 0, total, usd, model: m || null })
+          const event = claudeUsageEvent(obj, f.mtimeMs)
+          if (event) candidates.push(event)
         })
+      }
+
+      events = dedupeClaudeUsageEvents(candidates)
+      for (const event of events) {
+        const m = event.model
+        if (m && !/<synthetic>/.test(m)) {
+          modelTokens.set(m, (modelTokens.get(m) || 0) + event.total)
+        }
+        if (event.ts > lastTs) lastTs = event.ts
+        event.usd = estimateCost(
+          {
+            input: event.input,
+            output: event.output,
+            cacheWrite: event.cacheWrite,
+            cacheRead: event.cachedInput
+          },
+          m || 'claude-sonnet-4'
+        )
       }
 
       // All models seen in range, heaviest-usage first. meta.model stays the
