@@ -288,6 +288,12 @@ export function dedupeClaudeUsageEvents(candidates) {
   return [...keyed.values(), ...unkeyed]
 }
 
+export function selectClaudeHistoryFiles(allFiles, days, now = Date.now()) {
+  if (!Number.isFinite(days)) return [...allFiles]
+  const cutoff = now - days * 86_400_000
+  return allFiles.filter((file) => file.mtimeMs >= cutoff)
+}
+
 export default {
   id: 'claude',
   name: 'Claude Code',
@@ -320,7 +326,12 @@ export default {
     base.available = true
 
     const days = Math.max(2, Math.ceil((Date.now() - r.from) / 86_400_000) + 1)
-    const files = listJsonl(PROJECTS, { days })
+    // Discover the complete local history first. A narrow range must not make
+    // an installed Claude Code history look like it has never existed.
+    const allFiles = listJsonl(PROJECTS, { days: Number.POSITIVE_INFINITY })
+    const files = selectClaudeHistoryFiles(allFiles, days)
+    base.meta.totalSessions = allFiles.length
+    base.meta.lastActivity = allFiles[0]?.mtimeMs || null
 
     // No local sessions in the selected range is NOT a fatal state: the
     // rate-limit windows below come from the live API and reflect "right now"
@@ -331,24 +342,22 @@ export default {
     const modelTokens = new Map() // model -> total tokens (for badge ordering)
     let lastTs = 0
 
-    if (files.length === 0) {
-      base.error = 'No Claude Code sessions found for this range.'
-    } else {
-      base.meta.sessions = files.length
-      base.meta.lastActivity = files[0].mtimeMs
-
+    if (files.length > 0) {
       for (const f of files) {
         await readJsonlLines(f.path, (obj) => {
           if (!obj) return
           const event = claudeUsageEvent(obj, f.mtimeMs)
-          if (event) candidates.push(event)
+          if (event) candidates.push({ ...event, source: f.path })
         })
       }
 
       events = dedupeClaudeUsageEvents(candidates)
+      const rangeEvents = events.filter((event) => event.ts >= r.from && event.ts <= r.to)
+      base.meta.sessions = new Set(rangeEvents.map((event) => event.source).filter(Boolean)).size
+
       for (const event of events) {
         const m = event.model
-        if (m && !/<synthetic>/.test(m)) {
+        if (event.ts >= r.from && event.ts <= r.to && m && !/<synthetic>/.test(m)) {
           modelTokens.set(m, (modelTokens.get(m) || 0) + event.total)
         }
         if (event.ts > lastTs) lastTs = event.ts
@@ -368,7 +377,12 @@ export default {
       const models = [...modelTokens.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m)
       base.meta.model = models[0] || null
       base.meta.models = models
-      base.meta.lastActivity = lastTs || base.meta.lastActivity
+    }
+
+    if (allFiles.length === 0) {
+      base.error = 'No Claude Code sessions found locally.'
+    } else if (base.meta.sessions === 0) {
+      base.error = `No Claude Code usage in this range. ${allFiles.length} local session${allFiles.length === 1 ? '' : 's'} found outside it — try 7D or 30D.`
     }
 
     const now = Date.now()
@@ -444,3 +458,4 @@ export default {
     return base
   }
 }
+
