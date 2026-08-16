@@ -1,9 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { claudeUsageEvent, dedupeClaudeUsageEvents, selectClaudeHistoryFiles } from '../src/main/providers/claude.js'
+import {
+  claudeUsageEvent,
+  dedupeClaudeUsageEvents,
+  selectClaudeHistoryFiles,
+  limitsWindows,
+  surfaceLabel
+} from '../src/main/providers/claude.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
-import { summarize } from '../src/main/providers/util.js'
+import { estimateTextTokens, chatgptConversationEvents } from '../src/main/providers/chatgpt.js'
+import { summarize, priceFor, PRICING } from '../src/main/providers/util.js'
 import { buildSessions } from '../src/main/providers/sessions.js'
 import { mergeSnapshots } from '../src/main/providers/hub.js'
 
@@ -77,6 +84,93 @@ test('OpenAI cached tokens are a subset of input, not extra total usage', () => 
     reasoning: 30,
     total: 600
   })
+})
+
+test('limits[] parsing tolerates every observed usage-API shape', () => {
+  // percent + kind/group (current shape)
+  const current = limitsWindows([
+    { kind: 'session', percent: 42, resets_at: '2026-08-16T04:00:00Z' },
+    { kind: 'weekly_scoped', group: 'weekly', percent: 12, scope: { model: { display_name: 'Opus' } } }
+  ])
+  assert.equal(current.length, 2)
+  assert.equal(current[0].id, 'five_hour')
+  assert.equal(current[0].usedPercent, 42)
+  assert.equal(current[1].label, 'Weekly · Opus')
+
+  // utilization instead of percent; seven_day kind; surface scope
+  const drifted = limitsWindows([
+    { kind: 'five_hour', utilization: 9 },
+    { kind: 'seven_day', utilization: 55 },
+    { kind: 'weekly_scoped', group: 'weekly', percent: 3, scope: { surface: 'Cowork' } }
+  ])
+  assert.equal(drifted.length, 3)
+  assert.equal(drifted[0].usedPercent, 9)
+  assert.equal(drifted[1].windowMinutes, 10080)
+  assert.equal(drifted[2].label, 'Weekly · Cowork')
+
+  // used/limit pair fallback
+  const ratio = limitsWindows([{ kind: 'session', used: 25, limit: 100 }])
+  assert.equal(ratio[0].usedPercent, 25)
+
+  assert.deepEqual(limitsWindows(null), [])
+})
+
+test('surface labels map transcript entrypoints to human names', () => {
+  assert.equal(surfaceLabel('cli'), 'Claude Code · CLI')
+  assert.equal(surfaceLabel('remote_desktop'), 'Claude Code · web')
+  assert.equal(surfaceLabel('cowork-local'), 'Cowork')
+  assert.equal(surfaceLabel(null), null)
+})
+
+test('sessions carry per-event surface products and titles through buildSessions', () => {
+  const start = Date.parse('2026-08-15T10:00:00Z')
+  const sessions = buildSessions(
+    [
+      { ts: start, sessionId: 's1', title: 'franktoken', product: 'Cowork', model: 'claude-opus-5', input: 5, cachedInput: 0, cacheWrite: 0, output: 5, reasoning: 0, total: 10, usd: 0.001 },
+      { ts: start + 1_000, sessionId: 's1', title: 'franktoken', product: 'Cowork', model: 'claude-opus-5', input: 5, cachedInput: 0, cacheWrite: 0, output: 5, reasoning: 0, total: 10, usd: 0.001 }
+    ],
+    { from: start - 1, to: start + 10_000 },
+    { provider: 'claude', product: 'Claude Code', sourceType: 'local' }
+  )
+  assert.equal(sessions.length, 1)
+  assert.equal(sessions[0].product, 'Cowork')
+  assert.equal(sessions[0].title, 'franktoken')
+  assert.equal(sessions[0].tokens.total, 20)
+})
+
+test('pricing matches most-specific model key first', () => {
+  assert.equal(priceFor('claude-opus-4-8'), PRICING['claude-opus-4-8'])
+  assert.equal(priceFor('claude-opus-4-20250514'), PRICING['claude-opus-4'])
+  assert.equal(priceFor('claude-fable-5'), PRICING['claude-fable-5'])
+  assert.equal(priceFor('gpt-5-codex-mini'), PRICING['gpt-5-codex'])
+  assert.equal(priceFor('mystery-model'), PRICING.default)
+})
+
+test('ChatGPT export conversations become estimated usage events', () => {
+  assert.equal(estimateTextTokens('abcdefgh'), 2)
+  const convo = {
+    conversation_id: 'c1',
+    title: 'Test chat',
+    create_time: 1755200000,
+    mapping: {
+      a: { message: { author: { role: 'user' }, create_time: 1755200000, content: { content_type: 'text', parts: ['hello there, how are you?'] } } },
+      b: {
+        message: {
+          author: { role: 'assistant' },
+          create_time: 1755200060,
+          metadata: { model_slug: 'gpt-5' },
+          content: { content_type: 'text', parts: ['I am doing great, thanks for asking!'] }
+        }
+      },
+      root: { message: null }
+    }
+  }
+  const events = chatgptConversationEvents(convo)
+  assert.equal(events.length, 2)
+  assert.equal(events[0].input > 0 && events[0].output === 0, true)
+  assert.equal(events[1].output > 0 && events[1].input === 0, true)
+  assert.equal(events[1].model, 'gpt-5')
+  assert.ok(events[1].usd > 0)
 })
 
 test('summary preserves cache-write tokens without inflating provider totals', () => {

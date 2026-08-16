@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('api', {
   setRange: (spec) => ipcRenderer.invoke('range:set', spec),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
+  exportReport: () => ipcRenderer.invoke('report:export'),
   onUpdate: (cb) => {
     const handler = (_e, payload) => cb(payload)
     ipcRenderer.on('snapshot:update', handler)

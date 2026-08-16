@@ -52,7 +52,9 @@ export function buildSessions(events, range, options = {}) {
       session = {
         id,
         provider: options.provider || 'unknown',
-        product: options.product || options.provider || 'unknown',
+        // Events may carry a per-session product (e.g. the Claude surface the
+        // session ran on: CLI / web / desktop / IDE / Cowork).
+        product: event.product || options.product || options.provider || 'unknown',
         sourceType: options.sourceType || 'local',
         sourceLabel: options.sourceLabel || 'Local session',
         title: event.title || sessionLabel(source, `Session ${id.slice(0, 8)}`),

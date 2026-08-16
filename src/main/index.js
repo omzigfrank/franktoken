@@ -1,9 +1,14 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, shell } from 'electron'
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, shell, dialog } from 'electron'
 import { fileURLToPath } from 'node:url'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import Store from 'electron-store'
 import { fetchAll } from './providers/registry.js'
 import { fetchHub, mergeSnapshots } from './providers/hub.js'
+import { claudeRoots } from './providers/claude.js'
+import { IMPORT_ROOT } from './providers/chatgpt.js'
+import { buildReportHtml } from './report.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -228,6 +233,48 @@ function startPolling() {
   pollTimer = setInterval(poll, sec * 1000)
 }
 
+// ---- real-time file watching ---------------------------------------- //
+// Session transcripts change the instant a surface streams a response, so a
+// recursive watch on each provider's data root keeps the dashboard fresh
+// within seconds instead of waiting for the next poll tick.
+const watched = new Map() // dir -> FSWatcher
+let watchDebounce = null
+
+function onDataChanged() {
+  if (watchDebounce) clearTimeout(watchDebounce)
+  watchDebounce = setTimeout(() => {
+    watchDebounce = null
+    poll()
+  }, 1200)
+}
+
+function watchRoots() {
+  const roots = [
+    ...claudeRoots().map((r) => path.join(r, 'projects')),
+    path.join(os.homedir(), '.codex', 'sessions'),
+    IMPORT_ROOT
+  ]
+  for (const dir of roots) {
+    if (watched.has(dir)) continue
+    try {
+      if (!fs.existsSync(dir)) continue
+      // Recursive fs.watch is supported on macOS, Windows, and Linux (Node 20+).
+      const w = fs.watch(dir, { recursive: true }, onDataChanged)
+      w.on('error', () => {
+        try {
+          w.close()
+        } catch {
+          /* already closed */
+        }
+        watched.delete(dir)
+      })
+      watched.set(dir, w)
+    } catch {
+      /* recursive watch unavailable — polling still covers updates */
+    }
+  }
+}
+
 function createTray() {
   tray = new Tray(trayImage())
   tray.setToolTip('FrankToken')
@@ -265,6 +312,29 @@ ipcMain.handle('settings:set', (_e, patch) => {
   if (patch && 'launchAtLogin' in patch) setLogin(!!patch.launchAtLogin)
   return store.store
 })
+// Export the shareable interactive HTML report (self-contained single file).
+ipcMain.handle('report:export', async () => {
+  if (lastSnapshots.length === 0) await poll()
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: 'Export FrankToken report',
+    defaultPath: path.join(app.getPath('documents'), `franktoken-report-${stamp}.html`),
+    filters: [{ name: 'HTML report', extensions: ['html'] }]
+  })
+  if (canceled || !filePath) return { ok: false, canceled: true }
+  try {
+    const html = buildReportHtml({
+      snapshots: lastSnapshots,
+      range: { spec: store.get('range'), resolved: resolveRange() },
+      generatedAt: Date.now()
+    })
+    fs.writeFileSync(filePath, html)
+    shell.showItemInFolder(filePath)
+    return { ok: true, path: filePath }
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) }
+  }
+})
 ipcMain.on('window:hide', () => win && win.hide())
 ipcMain.on('window:minimize', () => win && win.minimize())
 ipcMain.on('app:quit', () => { app.isQuitting = true; app.quit() })
@@ -284,6 +354,10 @@ if (!gotLock) {
     setLogin(!!store.get('launchAtLogin'))
     await poll()
     startPolling()
+    watchRoots()
+    // Data roots can appear after launch (first Claude session, first import
+    // drop) — re-check for new roots once a minute.
+    setInterval(watchRoots, 60_000)
   })
 
   app.on('window-all-closed', () => {

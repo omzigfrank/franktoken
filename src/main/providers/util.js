@@ -6,18 +6,36 @@ import readline from 'node:readline'
 
 export const HOME = os.homedir()
 
-/** Approximate USD price per 1M tokens. Used for cost ESTIMATES only. */
+/**
+ * Approximate USD price per 1M tokens. Used for cost ESTIMATES only.
+ * Matching is first-key-that-the-model-id-contains, so more specific keys
+ * MUST appear before their prefixes (claude-opus-4-8 before claude-opus-4).
+ */
 export const PRICING = {
-  // Anthropic (Claude)
+  // Anthropic (Claude) — list rates per 1M tokens; cacheWrite = 1.25x input,
+  // cacheRead = 0.1x input (Anthropic's standard cache pricing).
+  'claude-fable-5': { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 },
+  'claude-mythos': { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 },
+  'claude-opus-4-8': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  'claude-opus-4-7': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  'claude-opus-4-6': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  'claude-opus-4-5': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  'claude-opus-4-1': { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 },
+  'claude-opus-5': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
   'claude-opus-4': { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 },
+  'claude-sonnet-5': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   'claude-sonnet-4': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   'claude-haiku-4': { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
+  'claude-3-7-sonnet': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   'claude-3-5-sonnet': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   'claude-3-5-haiku': { input: 0.8, output: 4, cacheWrite: 1, cacheRead: 0.08 },
-  // OpenAI (Codex / GPT)
-  'gpt-5': { input: 1.25, output: 10, cacheWrite: 1.25, cacheRead: 0.125 },
+  // OpenAI (Codex / ChatGPT)
   'gpt-5-codex': { input: 1.25, output: 10, cacheWrite: 1.25, cacheRead: 0.125 },
+  'gpt-5.1': { input: 1.25, output: 10, cacheWrite: 1.25, cacheRead: 0.125 },
+  'gpt-5': { input: 1.25, output: 10, cacheWrite: 1.25, cacheRead: 0.125 },
+  'gpt-4.1': { input: 2, output: 8, cacheWrite: 2, cacheRead: 0.5 },
   'o4-mini': { input: 1.1, output: 4.4, cacheWrite: 1.1, cacheRead: 0.275 },
+  o3: { input: 2, output: 8, cacheWrite: 2, cacheRead: 0.5 },
   'gpt-4o': { input: 2.5, output: 10, cacheWrite: 2.5, cacheRead: 1.25 },
   default: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 }
 }
@@ -188,3 +206,4 @@ export function exists(p) {
     return false
   }
 }
+

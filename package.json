@@ -1,7 +1,7 @@
 {
   "name": "franktoken",
-  "version": "0.2.0",
-  "description": "FrankToken — real-time, cross-device AI session, token, model, and USD cost intelligence for desktop and the web.",
+  "version": "0.3.0",
+  "description": "FrankToken — real-time, cross-device AI session, token, model, and USD cost intelligence across Claude (all surfaces), OpenAI Codex, and ChatGPT, for desktop and the web.",
   "main": "out/main/index.js",
   "author": "Frank Diaz",
   "license": "MIT",

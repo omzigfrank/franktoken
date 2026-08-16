@@ -1,8 +1,8 @@
 # FrankToken
 
-FrankToken is a live, fidelity-aware AI consumption observatory. It combines request traces, local CLI sessions, provider usage aggregates, and USD cost into one Electron dashboard and one shareable browser report.
+FrankToken is a live, fidelity-aware AI consumption observatory. It combines request traces, local CLI sessions, provider usage aggregates, and USD cost into one Electron dashboard (Windows, macOS, Linux) and one shareable browser report.
 
-The v0.2 rebuild adds:
+The v0.3 rebuild adds:
 
 - A central Hub that accepts OTLP/HTTP traces, logs, and metrics in JSON or protobuf.
 - Server-sent updates to every open report as soon as a new signal arrives.
@@ -11,6 +11,23 @@ The v0.2 rebuild adds:
 - A coverage control room that labels the detail and freshness actually supplied by each product.
 - Docker deployment and token-protected external sharing.
 - Built-in OpenAI Organization Usage and Anthropic Usage API reconciliation.
+- **Live, account-wide Claude limits** from `api/oauth/usage` — the pool every Claude surface
+  draws down (Claude.ai, Claude Code CLI/web/desktop/IDE, Cowork, Design, Office plugins), so
+  the 5-hour / weekly / per-model windows reflect usage from **any signed-in device**. OAuth
+  credentials are read from `.credentials.json`, `CLAUDE_CONFIG_DIR`, `~/.config/claude`, or
+  the **macOS Keychain**, auto-refreshed, with tolerant parsing across every observed
+  `limits[]` API shape.
+- **File watchers** on every local data root — the dashboard refreshes within seconds of a
+  transcript changing, without waiting for a poll tick.
+- **Session surface tagging**: local Claude sessions carry the surface they ran on
+  (CLI / web / desktop / IDE / Cowork) from transcript metadata, filterable in the explorer.
+- **ChatGPT / ChatGPT Work import**: OpenAI exposes no usage API for consumer ChatGPT, so drop
+  the official data export's `conversations.json` into `~/.franktoken/imports/chatgpt/` (or
+  `chatgpt-work/`) and conversations become sessions with timestamps, model slugs, and
+  clearly-labeled estimated tokens (chars/4).
+- **One-click shareable snapshot**: the "⬡" button exports a **single self-contained HTML
+  report** (no external assets) with interactive charts, session flyouts, and 4-way session
+  comparison overlays — for sharing without standing up a Hub.
 
 ![FrankToken icon](resources/icon.png)
 
@@ -31,8 +48,15 @@ FrankToken does not pretend every vendor surface exposes the same data. It takes
 | ChatGPT | Workspace analytics / Compliance adapter | Workspace activity | Provider-defined |
 | ChatGPT Work | Workspace and Codex analytics adapters | Workspace/user/model aggregate | Provider-defined |
 | OpenAI API | Organization Usage API | Minute × model × project/user/key | Minutes |
+| ChatGPT (personal) | Official data export import | Conversation/message (estimated tokens) | Manual |
 
 Vendor reality matters: provider admin APIs are reconciliation feeds, not second-by-second event streams. Public provider documentation also does not promise personal ChatGPT or Claude users a token-level export for every web conversation. FrankToken therefore never scrapes private UI state or invents per-session precision.
+
+To add a provider, drop a file in `src/main/providers/` that default-exports the object
+described in [`types.js`](src/main/providers/types.js) (`id`, `name`, `color`, `detect()`,
+`fetch()`), emit `sessions[]` via [`sessions.js`](src/main/providers/sessions.js), and add it
+to the array in [`registry.js`](src/main/providers/registry.js). The UI, tray, charts, hub
+sync, and report pick it up automatically.
 
 Official capability references: [Claude Code monitoring](https://code.claude.com/docs/en/monitoring-usage), [Claude Code Analytics API](https://platform.claude.com/docs/en/manage-claude/claude-code-analytics-api), [Cowork OpenTelemetry](https://support.claude.com/en/articles/14477985-monitor-claude-cowork-activity-with-opentelemetry), [Office Agents OpenTelemetry](https://support.claude.com/en/articles/14447276-configure-a-custom-opentelemetry-collector-for-office-agents), [Anthropic Usage and Cost API](https://platform.claude.com/docs/en/manage-claude/usage-cost-api), [OpenAI Organization Usage API](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage), and [ChatGPT workspace analytics](https://learn.chatgpt.com/docs/enterprise/workspace-analytics).
 

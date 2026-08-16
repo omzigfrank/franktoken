@@ -67,7 +67,7 @@ function windowFrom(snap, id, label) {
 export default {
   id: 'codex',
   name: 'OpenAI Codex',
-  color: '#10a37f',
+  color: '#159d74', // CVD-validated with claude/chatgpt series colors
 
   detect() {
     return exists(SESSIONS) || exists(ROOT)
@@ -116,6 +116,8 @@ export default {
       // token_count is cumulative within a session -> diff into increments.
       let prev = null
       let sessionModel = null
+      let sessionCwd = null
+      let sessionId = null
       const snaps = [] // { ts, usage }
       await readJsonlLines(f.path, (obj) => {
         if (!obj) return
@@ -123,6 +125,11 @@ export default {
         const m = obj.payload?.model || obj.model || obj.payload?.turn_context?.model
         if (m) {
           sessionModel = m
+        }
+        const cwd = obj.payload?.cwd || obj.payload?.turn_context?.cwd || obj.cwd
+        if (cwd && !sessionCwd) sessionCwd = cwd
+        if (!sessionId && (obj.payload?.id || obj.payload?.session_id)) {
+          sessionId = obj.payload.id || obj.payload.session_id
         }
         const rl = obj.payload?.rate_limits || obj.rate_limits || obj.info?.rate_limits
         if (rl && (rl.primary || rl.secondary)) {
@@ -152,7 +159,15 @@ export default {
           { input: d.input, output: d.output, cacheWrite: d.cacheWrite, cacheRead: d.cachedInput },
           eventModel || 'gpt-5-codex'
         )
-        events.push({ ts: s.ts, ...d, usd, model: eventModel, source: f.path })
+        events.push({
+          ts: s.ts,
+          ...d,
+          usd,
+          model: eventModel,
+          source: f.path,
+          sessionId: sessionId || null,
+          title: sessionCwd ? path.basename(sessionCwd) : null
+        })
       }
     }
 

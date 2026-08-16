@@ -59,7 +59,7 @@ export default function App() {
         <RangePicker spec={range?.spec} resolved={range?.resolved} onApply={applyRange} />
         <div className="grow" />
         <span className="sync-badge"><i className="live-pulse" />{updatedAt ? `synced ${fmtAgo(updatedAt)}` : 'connecting'}</span>
-        <div className="ctrls"><button className="iconbtn" title="Refresh" onClick={refresh} disabled={refreshing}>↻</button>{isDesktop && <><button className="iconbtn" title="Minimize" onClick={() => dataApi.minimize()}>—</button><button className="iconbtn" title="Hide to tray" onClick={() => dataApi.hide()}>⌄</button><button className="iconbtn danger" title="Quit" onClick={() => dataApi.quit()}>×</button></>}</div>
+        <div className="ctrls">{isDesktop && window.api?.exportReport && <button className="iconbtn" title="Export shareable interactive report (single HTML file)" onClick={() => window.api.exportReport()}>⬡</button>}<button className="iconbtn" title="Refresh" onClick={refresh} disabled={refreshing}>↻</button>{isDesktop && <><button className="iconbtn" title="Minimize" onClick={() => dataApi.minimize()}>—</button><button className="iconbtn" title="Hide to tray" onClick={() => dataApi.hide()}>⌄</button><button className="iconbtn danger" title="Quit" onClick={() => dataApi.quit()}>×</button></>}</div>
       </header>
 
       <div className="body">
