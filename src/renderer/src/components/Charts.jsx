@@ -1,8 +1,9 @@
 import React from 'react'
 import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
+  ScatterChart, Scatter, ZAxis, Legend, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis
 } from 'recharts'
-import { fmtTokens, fmtUsd } from '../format.js'
+import { fmtDuration, fmtTokens, fmtUsd } from '../format.js'
 
 const axis = { stroke: '#5e6b7e', fontSize: 10 }
 const grid = '#1b2230'
@@ -63,6 +64,93 @@ export function CostBars({ data, color = '#34d399' }) {
           ))}
         </Bar>
       </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
+const tooltipStyle = { background: '#101521', border: '1px solid #293248', borderRadius: 12, color: '#eef2ff', boxShadow: '0 18px 60px rgba(0,0,0,.45)' }
+const palette = ['#7c6cff', '#24d3ee', '#ff6b9a', '#f7b955', '#9af57f']
+
+export function SessionScatter({ data, onPick }) {
+  return (
+    <ResponsiveContainer width="100%" height={280}>
+      <ScatterChart margin={{ top: 22, right: 20, bottom: 12, left: 4 }}>
+        <CartesianGrid stroke="#242d42" strokeDasharray="3 6" />
+        <XAxis type="number" dataKey="durationMinutes" name="duration" tick={axis} tickFormatter={(value) => fmtDuration(value * 60_000)} />
+        <YAxis type="number" dataKey="totalTokens" name="tokens" tick={axis} width={48} tickFormatter={fmtTokens} />
+        <ZAxis type="number" dataKey="costUsd" range={[80, 900]} />
+        <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={tooltipStyle} formatter={(value, name) => name === 'tokens' ? fmtTokens(value) : name === 'duration' ? fmtDuration(value * 60_000) : value} labelFormatter={(_, payload) => payload?.[0]?.payload?.label || 'Session'} />
+        <Scatter data={data} fill="#7c6cff" onClick={(point) => onPick?.(point)}>
+          {data.map((entry, index) => <Cell key={`${entry.id}:${index}`} fill={palette[index % palette.length]} fillOpacity={0.82} stroke="#ffffff" strokeOpacity={0.18} />)}
+        </Scatter>
+      </ScatterChart>
+    </ResponsiveContainer>
+  )
+}
+
+export function TokenStackedBars({ data }) {
+  const rows = [...data].reverse().map((session) => ({
+    label: session.title.length > 16 ? `${session.title.slice(0, 16)}…` : session.title,
+    input: session.tokens.input,
+    cached: session.tokens.cachedInput,
+    cacheWrite: session.tokens.cacheWrite,
+    output: session.tokens.output,
+    reasoning: session.tokens.reasoning
+  }))
+  return (
+    <ResponsiveContainer width="100%" height={280}>
+      <BarChart data={rows} layout="vertical" margin={{ top: 10, right: 16, bottom: 4, left: 22 }}>
+        <CartesianGrid stroke="#242d42" horizontal={false} />
+        <XAxis type="number" tick={axis} tickFormatter={fmtTokens} />
+        <YAxis type="category" dataKey="label" width={105} tick={axis} />
+        <Tooltip contentStyle={tooltipStyle} formatter={(value, name) => [fmtTokens(value), name]} />
+        <Bar dataKey="input" stackId="tokens" fill="#7c6cff" />
+        <Bar dataKey="cached" stackId="tokens" fill="#24d3ee" />
+        <Bar dataKey="cacheWrite" stackId="tokens" fill="#f7b955" />
+        <Bar dataKey="output" stackId="tokens" fill="#ff6b9a" />
+        <Bar dataKey="reasoning" stackId="tokens" fill="#9af57f" radius={[0, 5, 5, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
+export function ModelBars({ data }) {
+  return (
+    <ResponsiveContainer width="100%" height={330}>
+      <BarChart data={data} margin={{ top: 24, right: 16, bottom: 58, left: 2 }}>
+        <CartesianGrid stroke="#242d42" vertical={false} />
+        <XAxis dataKey="model" tick={axis} angle={-25} textAnchor="end" interval={0} />
+        <YAxis tick={axis} width={48} tickFormatter={fmtTokens} />
+        <Tooltip contentStyle={tooltipStyle} formatter={(value, name) => [fmtTokens(value), name]} />
+        <Legend verticalAlign="top" height={30} wrapperStyle={{ color: '#8994aa', fontSize: 11 }} />
+        <Bar dataKey="input" stackId="tokens" fill="#7c6cff" />
+        <Bar dataKey="cachedInput" name="cache read" stackId="tokens" fill="#24d3ee" />
+        <Bar dataKey="cacheWrite" name="cache write" stackId="tokens" fill="#f7b955" />
+        <Bar dataKey="output" stackId="tokens" fill="#ff6b9a" radius={[5, 5, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
+export function ModelRadar({ data }) {
+  const max = (key) => Math.max(1, ...data.map((row) => row[key] || 0))
+  const axes = [
+    ['Tokens', 'total'], ['Cost', 'cost'], ['Sessions', 'sessions'], ['Requests', 'requests'], ['Cache %', 'cacheRate'], ['Output %', 'outputRate']
+  ]
+  const rows = axes.map(([metric, key]) => ({
+    metric,
+    ...Object.fromEntries(data.map((row) => [row.model, ((row[key] || 0) / max(key)) * 100]))
+  }))
+  return (
+    <ResponsiveContainer width="100%" height={330}>
+      <RadarChart data={rows} outerRadius="72%">
+        <PolarGrid stroke="#2a3349" />
+        <PolarAngleAxis dataKey="metric" tick={{ fill: '#8994aa', fontSize: 11 }} />
+        <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
+        {data.map((row, index) => <Radar key={row.model} name={row.model} dataKey={row.model} stroke={palette[index % palette.length]} fill={palette[index % palette.length]} fillOpacity={0.12} strokeWidth={2} />)}
+        <Legend wrapperStyle={{ color: '#8994aa', fontSize: 11 }} />
+        <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${Number(value).toFixed(0)}%`} />
+      </RadarChart>
     </ResponsiveContainer>
   )
 }
