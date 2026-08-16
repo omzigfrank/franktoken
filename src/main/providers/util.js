@@ -6,18 +6,36 @@ import readline from 'node:readline'
 
 export const HOME = os.homedir()
 
-/** Approximate USD price per 1M tokens. Used for cost ESTIMATES only. */
+/**
+ * Approximate USD price per 1M tokens. Used for cost ESTIMATES only.
+ * Matching is first-key-that-the-model-id-contains, so more specific keys
+ * MUST appear before their prefixes (claude-opus-4-8 before claude-opus-4).
+ */
 export const PRICING = {
-  // Anthropic (Claude)
+  // Anthropic (Claude) — list rates per 1M tokens; cacheWrite = 1.25x input,
+  // cacheRead = 0.1x input (Anthropic's standard cache pricing).
+  'claude-fable-5': { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 },
+  'claude-mythos': { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 },
+  'claude-opus-4-8': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  'claude-opus-4-7': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  'claude-opus-4-6': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  'claude-opus-4-5': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  'claude-opus-4-1': { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 },
+  'claude-opus-5': { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
   'claude-opus-4': { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 },
+  'claude-sonnet-5': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   'claude-sonnet-4': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   'claude-haiku-4': { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
+  'claude-3-7-sonnet': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   'claude-3-5-sonnet': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   'claude-3-5-haiku': { input: 0.8, output: 4, cacheWrite: 1, cacheRead: 0.08 },
-  // OpenAI (Codex / GPT)
-  'gpt-5': { input: 1.25, output: 10, cacheWrite: 1.25, cacheRead: 0.125 },
+  // OpenAI (Codex / ChatGPT)
   'gpt-5-codex': { input: 1.25, output: 10, cacheWrite: 1.25, cacheRead: 0.125 },
+  'gpt-5.1': { input: 1.25, output: 10, cacheWrite: 1.25, cacheRead: 0.125 },
+  'gpt-5': { input: 1.25, output: 10, cacheWrite: 1.25, cacheRead: 0.125 },
+  'gpt-4.1': { input: 2, output: 8, cacheWrite: 2, cacheRead: 0.5 },
   'o4-mini': { input: 1.1, output: 4.4, cacheWrite: 1.1, cacheRead: 0.275 },
+  o3: { input: 2, output: 8, cacheWrite: 2, cacheRead: 0.5 },
   'gpt-4o': { input: 2.5, output: 10, cacheWrite: 2.5, cacheRead: 1.25 },
   default: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 }
 }
@@ -187,4 +205,90 @@ export function exists(p) {
   } catch {
     return false
   }
+}
+
+/**
+ * Downsample a session's per-event usage into a cumulative timeline of at
+ * most `maxPoints` points, so flyouts/reports can draw a sparkline without
+ * shipping thousands of raw events across IPC.
+ * events must be sorted by ts ascending. Returns [{ts, total, usd}].
+ */
+export function cumulativeTimeline(events, maxPoints = 60) {
+  if (!events.length) return []
+  const points = []
+  let runTotal = 0
+  let runUsd = 0
+  for (const e of events) {
+    runTotal += e.total || 0
+    runUsd += e.usd || 0
+    points.push({ ts: e.ts, total: runTotal, usd: runUsd })
+  }
+  if (points.length <= maxPoints) return points
+  const out = [points[0]]
+  const step = (points.length - 1) / (maxPoints - 1)
+  for (let i = 1; i < maxPoints - 1; i++) out.push(points[Math.round(i * step)])
+  out.push(points[points.length - 1])
+  return out
+}
+
+/**
+ * Build a per-session summary from that session's usage events.
+ * events: [{ts, input, cachedInput, cacheWrite, output, reasoning, total, usd, model}]
+ * Returns null when the session carries no usage.
+ */
+export function buildSessionSummary(events, { id, title = null, surface = null, estimated = true } = {}) {
+  const usable = events.filter((e) => e && e.total > 0 && e.ts > 0).sort((a, b) => a.ts - b.ts)
+  if (usable.length === 0) return null
+  const tokens = { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 }
+  let usd = 0
+  const modelAgg = new Map() // model -> {total, usd}
+  for (const e of usable) {
+    tokens.input += e.input || 0
+    tokens.cachedInput += e.cachedInput || 0
+    tokens.cacheWrite += e.cacheWrite || 0
+    tokens.output += e.output || 0
+    tokens.reasoning += e.reasoning || 0
+    tokens.total += e.total || 0
+    usd += e.usd || 0
+    const m = e.model && !/<synthetic>/.test(e.model) ? e.model : null
+    if (m) {
+      const agg = modelAgg.get(m) || { total: 0, usd: 0 }
+      agg.total += e.total || 0
+      agg.usd += e.usd || 0
+      modelAgg.set(m, agg)
+    }
+  }
+  const models = [...modelAgg.entries()]
+    .map(([model, v]) => ({ model, total: v.total, usd: v.usd }))
+    .sort((a, b) => b.total - a.total)
+  const start = usable[0].ts
+  const end = usable[usable.length - 1].ts
+  return {
+    id,
+    title,
+    surface,
+    start,
+    end,
+    durationMs: Math.max(0, end - start),
+    events: usable.length,
+    tokens,
+    usd,
+    estimated,
+    models,
+    model: models[0]?.model || null,
+    timeline: cumulativeTimeline(usable)
+  }
+}
+
+/**
+ * Sort sessions newest-first and cap the list (IPC payload guard). Sessions
+ * outside [from,to] are dropped; overlap counts.
+ */
+export function selectSessions(sessions, range, limit = 400) {
+  const r = normalizeRange(range)
+  return sessions
+    .filter(Boolean)
+    .filter((s) => s.end >= r.from && s.start <= r.to)
+    .sort((a, b) => b.end - a.end)
+    .slice(0, limit)
 }

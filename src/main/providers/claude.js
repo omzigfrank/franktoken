@@ -1,17 +1,42 @@
-// Claude Code provider.
-// - Rate-limit windows: LIVE from https://api.anthropic.com/api/oauth/usage,
-//   the same endpoint Claude Code uses, authed with the local OAuth token in
-//   ~/.claude/.credentials.json. When the access token expires we refresh it
-//   with the stored refresh token and persist the rotated pair back to the
-//   same file, so live limits keep working without manual /login.
-// - Tokens & cost charts: parsed from ~/.claude/projects/<slug>/<session>.jsonl.
+// Claude provider — covers every Anthropic surface tied to the signed-in
+// Claude account: Claude.ai (web/desktop/mobile), Claude Code (CLI, web,
+// desktop), Claude Cowork, Claude Design, and the Office plugins.
+//
+// - Rate-limit windows: LIVE from https://api.anthropic.com/api/oauth/usage —
+//   the same account-wide endpoint every Claude surface draws down, so these
+//   numbers reflect usage from ANY device you sign into, within seconds of
+//   the API updating. Authed with the local OAuth token (credentials file or
+//   macOS Keychain). When the access token expires we refresh it with the
+//   stored refresh token so live limits keep working without manual /login.
+// - Tokens, cost & per-session detail: parsed from local transcripts
+//   (~/.claude/projects/<slug>/<session>.jsonl and any extra roots). Local
+//   transcripts exist only on machines where a Claude Code-family surface
+//   ran, so session granularity is per-machine while the windows are global.
 import fs from 'node:fs'
 import path from 'node:path'
-import { HOME, exists, listJsonl, readJsonlLines, estimateCost, summarize, normalizeRange } from './util.js'
+import { execFileSync } from 'node:child_process'
+import {
+  HOME,
+  exists,
+  listJsonl,
+  readJsonlLines,
+  estimateCost,
+  summarize,
+  normalizeRange,
+  buildSessionSummary,
+  selectSessions
+} from './util.js'
 
-const ROOT = path.join(HOME, '.claude')
-const PROJECTS = path.join(ROOT, 'projects')
-const CREDENTIALS = path.join(ROOT, '.credentials.json')
+// Config dir: Claude Code honors CLAUDE_CONFIG_DIR; XDG installs may use
+// ~/.config/claude. Scan every root that exists so no surface is missed.
+export function claudeRoots() {
+  const roots = []
+  if (process.env.CLAUDE_CONFIG_DIR) roots.push(process.env.CLAUDE_CONFIG_DIR)
+  roots.push(path.join(HOME, '.claude'))
+  roots.push(path.join(HOME, '.config', 'claude'))
+  return [...new Set(roots)]
+}
+
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token'
 // Claude Code's public OAuth client id (PKCE app — not a secret).
@@ -21,20 +46,61 @@ const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 // usage API is unavailable (no/expired token, offline).
 const BUDGET = { '5h': 12_000_000, weekly: 70_000_000 }
 
-function readToken() {
-  try {
-    const cred = JSON.parse(fs.readFileSync(CREDENTIALS, 'utf8'))
-    const o = cred.claudeAiOauth || cred
-    if (!o?.accessToken) return null
-    return {
-      token: o.accessToken,
-      // expiresAt is epoch ms; treat as expired 2 min early so we refresh
-      // before the API starts rejecting us mid-poll.
-      expired: !!(o.expiresAt && o.expiresAt < Date.now() + 120_000),
-      hasRefresh: !!o.refreshToken
+function credentialsCandidates() {
+  return claudeRoots().map((r) => path.join(r, '.credentials.json'))
+}
+
+function readCredentialsFile() {
+  for (const file of credentialsCandidates()) {
+    try {
+      const cred = JSON.parse(fs.readFileSync(file, 'utf8'))
+      const o = cred.claudeAiOauth || cred
+      if (o?.accessToken || o?.refreshToken) return { file, raw: cred, oauth: o }
+    } catch {
+      /* try next */
     }
+  }
+  return null
+}
+
+// Newer Claude Code builds on macOS store credentials in the login Keychain
+// instead of ~/.claude/.credentials.json.
+function readKeychainCredentials() {
+  if (process.platform !== 'darwin') return null
+  try {
+    const out = execFileSync('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    const cred = JSON.parse(out.trim())
+    const o = cred.claudeAiOauth || cred
+    if (o?.accessToken || o?.refreshToken) return { file: null, raw: cred, oauth: o }
   } catch {
+    /* keychain entry absent or locked */
+  }
+  return null
+}
+
+// In-memory token from a refresh we could not persist (keychain-backed creds).
+let memoryToken = null // { accessToken, expiresAt, refreshToken }
+
+function readToken() {
+  if (memoryToken?.accessToken && memoryToken.expiresAt > Date.now() + 120_000) {
+    return { token: memoryToken.accessToken, expired: false, hasRefresh: !!memoryToken.refreshToken }
+  }
+  const cred = readCredentialsFile() || readKeychainCredentials()
+  if (!cred?.oauth?.accessToken) {
+    if (cred?.oauth?.refreshToken) return { token: null, expired: true, hasRefresh: true }
     return null
+  }
+  const o = cred.oauth
+  return {
+    token: o.accessToken,
+    // expiresAt is epoch ms; treat as expired 2 min early so we refresh
+    // before the API starts rejecting us mid-poll.
+    expired: !!(o.expiresAt && o.expiresAt < Date.now() + 120_000),
+    hasRefresh: !!o.refreshToken
   }
 }
 
@@ -50,9 +116,9 @@ async function refreshAccessToken() {
   if (Date.now() - lastRefreshFailAt < REFRESH_FAIL_BACKOFF) return null
   refreshInFlight = (async () => {
     try {
-      const raw = JSON.parse(fs.readFileSync(CREDENTIALS, 'utf8'))
-      const o = raw.claudeAiOauth || raw
-      if (!o?.refreshToken) return null
+      const source = readCredentialsFile() || readKeychainCredentials()
+      const refreshToken = source?.oauth?.refreshToken || memoryToken?.refreshToken
+      if (!refreshToken) return null
       const ctrl = new AbortController()
       const t = setTimeout(() => ctrl.abort(), 10_000)
       const res = await fetch(TOKEN_URL, {
@@ -60,7 +126,7 @@ async function refreshAccessToken() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           grant_type: 'refresh_token',
-          refresh_token: o.refreshToken,
+          refresh_token: refreshToken,
           client_id: OAUTH_CLIENT_ID
         }),
         signal: ctrl.signal
@@ -75,23 +141,36 @@ async function refreshAccessToken() {
         lastRefreshFailAt = Date.now()
         return null
       }
-      // Re-read the file just before writing: Claude Code may have rewritten
-      // it while we were talking to the token endpoint — merge, don't clobber.
-      let cur
-      try {
-        cur = JSON.parse(fs.readFileSync(CREDENTIALS, 'utf8'))
-      } catch {
-        cur = raw
-      }
-      const curO = cur.claudeAiOauth || cur
-      const upd = {
-        ...curO,
+      memoryToken = {
         accessToken: d.access_token,
-        expiresAt: Date.now() + (d.expires_in || 3600) * 1000
+        expiresAt: Date.now() + (d.expires_in || 3600) * 1000,
+        refreshToken: d.refresh_token || refreshToken
       }
-      if (d.refresh_token) upd.refreshToken = d.refresh_token
-      const next = cur.claudeAiOauth ? { ...cur, claudeAiOauth: upd } : upd
-      fs.writeFileSync(CREDENTIALS, JSON.stringify(next))
+      // Persist rotated pair back to the credentials FILE (never the
+      // keychain — Claude Code owns that entry). Re-read just before writing:
+      // Claude Code may have rewritten it while we were talking to the token
+      // endpoint — merge, don't clobber.
+      if (source?.file) {
+        try {
+          let cur
+          try {
+            cur = JSON.parse(fs.readFileSync(source.file, 'utf8'))
+          } catch {
+            cur = source.raw
+          }
+          const curO = cur.claudeAiOauth || cur
+          const upd = {
+            ...curO,
+            accessToken: memoryToken.accessToken,
+            expiresAt: memoryToken.expiresAt
+          }
+          if (d.refresh_token) upd.refreshToken = d.refresh_token
+          const next = cur.claudeAiOauth ? { ...cur, claudeAiOauth: upd } : upd
+          fs.writeFileSync(source.file, JSON.stringify(next))
+        } catch {
+          /* keep the in-memory token */
+        }
+      }
       return d.access_token
     } catch {
       lastRefreshFailAt = Date.now()
@@ -116,31 +195,47 @@ function apiWindow(id, label, w) {
   }
 }
 
-// Newer API shape: a generic limits[] array. Per-model weekly windows moved
-// here as kind:"weekly_scoped" with scope.model.display_name (the legacy
-// seven_day_opus/seven_day_sonnet fields are null now).
-function limitsWindows(limits) {
+// Generic limits[] array parsing. The shape has drifted repeatedly (legacy
+// top-level fields -> limits[] with kind:"session"/group:"weekly" ->
+// weekly_scoped entries with scope.model / scope.surface), so accept every
+// variant we have observed rather than expecting one.
+export function limitsWindows(limits) {
   if (!Array.isArray(limits)) return []
   const out = []
   for (const l of limits) {
-    if (l?.percent == null) continue
-    if (l.kind === 'session') {
+    if (!l) continue
+    const pct = l.percent ?? l.utilization ?? (l.used != null && l.limit ? (l.used / l.limit) * 100 : null)
+    if (pct == null) continue
+    const kind = String(l.kind || l.type || '')
+    const group = String(l.group || '')
+    const resetsAt = l.resets_at ? Date.parse(l.resets_at) : null
+    const scopeName =
+      l.scope?.model?.display_name || l.scope?.model?.name || l.scope?.surface || l.scope?.display_name || null
+    if (kind === 'session' || kind === 'five_hour' || group === 'session') {
       out.push({
         id: 'five_hour',
         label: '5-Hour Limit',
-        usedPercent: Number(l.percent) || 0,
+        usedPercent: Number(pct) || 0,
         windowMinutes: 300,
-        resetsAt: l.resets_at ? Date.parse(l.resets_at) : null,
+        resetsAt,
         estimated: false
       })
-    } else if (l.group === 'weekly') {
-      const scopeName = l.scope?.model?.display_name || l.scope?.surface || null
+    } else if (group === 'weekly' || kind.startsWith('weekly') || kind === 'seven_day') {
       out.push({
         id: scopeName ? `weekly_${scopeName.toLowerCase().replace(/\W+/g, '_')}` : 'seven_day',
         label: scopeName ? `Weekly · ${scopeName}` : 'Weekly · all models',
-        usedPercent: Number(l.percent) || 0,
+        usedPercent: Number(pct) || 0,
         windowMinutes: 10080,
-        resetsAt: l.resets_at ? Date.parse(l.resets_at) : null,
+        resetsAt,
+        estimated: false
+      })
+    } else if (group === 'monthly' || kind.startsWith('monthly')) {
+      out.push({
+        id: scopeName ? `monthly_${scopeName.toLowerCase().replace(/\W+/g, '_')}` : 'monthly',
+        label: scopeName ? `Monthly · ${scopeName}` : 'Monthly',
+        usedPercent: Number(pct) || 0,
+        windowMinutes: 43200,
+        resetsAt,
         estimated: false
       })
     }
@@ -153,8 +248,8 @@ function limitsWindows(limits) {
 let liveCache = null // { windows, extra, at }
 let lastAttemptAt = 0
 let lastFailure = null // { reason }
-const LIVE_TTL = 120_000 // serve cached without hitting the API for 2 min
-const MIN_INTERVAL = 60_000 // never hit the API more than once per minute
+const LIVE_TTL = 30_000 // serve cached without hitting the API for 30s
+const MIN_INTERVAL = 20_000 // never hit the API more than every 20s
 
 // Returns { ok, windows, extra, at, reason } — reason set when not ok.
 async function fetchLiveWindows() {
@@ -170,8 +265,8 @@ async function fetchLiveWindows() {
   }
   lastAttemptAt = now
   let auth = readToken()
-  // Expired (or missing) access token but a refresh token on disk: refresh
-  // automatically and persist, so live limits never require a manual /login.
+  // Expired (or missing) access token but a refresh token available: refresh
+  // automatically, so live limits never require a manual /login.
   if ((!auth || auth.expired || !auth.token) && (auth?.hasRefresh || !auth)) {
     const fresh = await refreshAccessToken()
     if (fresh) auth = { token: fresh, expired: false }
@@ -238,6 +333,20 @@ function tokenNumber(value) {
   return Number.isFinite(n) && n > 0 ? n : 0
 }
 
+// Map a transcript row's entrypoint to a human surface label.
+export function surfaceLabel(entrypoint) {
+  if (!entrypoint) return null
+  const e = String(entrypoint).toLowerCase()
+  if (e.includes('cowork')) return 'Cowork'
+  if (e.includes('design')) return 'Design'
+  if (e.includes('remote')) return 'Claude Code · web'
+  if (e.includes('desktop')) return 'Claude Code · desktop'
+  if (e === 'cli' || e.includes('terminal')) return 'Claude Code · CLI'
+  if (e.includes('sdk')) return 'Agent SDK'
+  if (e.includes('vscode') || e.includes('ide') || e.includes('jetbrains')) return 'Claude Code · IDE'
+  return entrypoint
+}
+
 // Claude Code can persist the same API message repeatedly while streaming tool
 // calls, and copied conversation history can appear in branched transcripts.
 // Message IDs are globally unique, so retain only the most complete usage
@@ -265,7 +374,8 @@ export function claudeUsageEvent(obj, fallbackTs = 0) {
     cacheWrite,
     reasoning: 0,
     total,
-    model: msg.model || obj.model || null
+    model: msg.model || obj.model || null,
+    sessionId: obj.sessionId || null
   }
 }
 
@@ -296,11 +406,13 @@ export function selectClaudeHistoryFiles(allFiles, days, now = Date.now()) {
 
 export default {
   id: 'claude',
-  name: 'Claude Code',
-  color: '#d97757',
+  name: 'Claude',
+  // Series colors are CVD-validated as a set against the app's dark surface
+  // (claude #cf6a45 · codex #159d74 · chatgpt #9080e8) — change together.
+  color: '#cf6a45',
 
   detect() {
-    return exists(PROJECTS) || exists(ROOT)
+    return claudeRoots().some((r) => exists(r))
   },
 
   async fetch(range) {
@@ -315,11 +427,20 @@ export default {
       tokens: emptyTokens(),
       cost: { today: 0, total: 0, currency: 'USD', estimated: true },
       series: { tokensByDay: [], costByDay: [] },
-      meta: { lastActivity: null, sessions: 0, model: null }
+      sessions: [],
+      meta: {
+        lastActivity: null,
+        sessions: 0,
+        model: null,
+        // Rate-limit windows come from the account-wide usage API and cover
+        // every surface & device (Claude.ai, Code, Cowork, Design, plugins).
+        // Token/session detail below is parsed from THIS machine's files.
+        coverage: 'Limits: account-wide, all surfaces & devices · Sessions: this machine'
+      }
     }
 
     if (!this.detect()) {
-      base.error = 'Claude Code not found (~/.claude). Install the Claude Code CLI to track usage.'
+      base.error = 'No Claude data found (~/.claude). Sign in to Claude Code, Cowork, or the desktop app to track usage.'
       return base
     }
 
@@ -327,11 +448,13 @@ export default {
 
     const days = Math.max(2, Math.ceil((Date.now() - r.from) / 86_400_000) + 1)
     // Discover the complete local history first. A narrow range must not make
-    // an installed Claude Code history look like it has never existed.
-    const allFiles = listJsonl(PROJECTS, { days: Number.POSITIVE_INFINITY })
+    // an installed Claude history look like it has never existed.
+    const allFiles = claudeRoots()
+      .map((root) => listJsonl(path.join(root, 'projects'), { days: Number.POSITIVE_INFINITY }))
+      .flat()
     const files = selectClaudeHistoryFiles(allFiles, days)
     base.meta.totalSessions = allFiles.length
-    base.meta.lastActivity = allFiles[0]?.mtimeMs || null
+    base.meta.lastActivity = allFiles.reduce((m, f) => Math.max(m, f.mtimeMs), 0) || null
 
     // No local sessions in the selected range is NOT a fatal state: the
     // rate-limit windows below come from the live API and reflect "right now"
@@ -340,11 +463,18 @@ export default {
     const candidates = [] // raw transcript rows; deduplicated below by API message id
     let events = [] // one complete event per unique model response
     const modelTokens = new Map() // model -> total tokens (for badge ordering)
+    const fileMeta = new Map() // path -> {sessionId, cwd, branch, entrypoint}
 
     if (files.length > 0) {
       for (const f of files) {
+        const meta = { sessionId: null, cwd: null, branch: null, entrypoint: null }
+        fileMeta.set(f.path, meta)
         await readJsonlLines(f.path, (obj) => {
           if (!obj) return
+          if (obj.sessionId && !meta.sessionId) meta.sessionId = obj.sessionId
+          if (obj.cwd && !meta.cwd) meta.cwd = obj.cwd
+          if (obj.gitBranch && !meta.branch) meta.branch = obj.gitBranch
+          if (obj.entrypoint) meta.entrypoint = obj.entrypoint
           const event = claudeUsageEvent(obj, f.mtimeMs)
           if (event) candidates.push({ ...event, source: f.path })
         })
@@ -352,7 +482,9 @@ export default {
 
       events = dedupeClaudeUsageEvents(candidates)
       const rangeEvents = events.filter((event) => event.ts >= r.from && event.ts <= r.to)
-      base.meta.sessions = new Set(rangeEvents.map((event) => event.source).filter(Boolean)).size
+      base.meta.sessions = new Set(
+        rangeEvents.map((event) => event.sessionId || event.source).filter(Boolean)
+      ).size
 
       for (const event of events) {
         const m = event.model
@@ -375,12 +507,41 @@ export default {
       const models = [...modelTokens.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m)
       base.meta.model = models[0] || null
       base.meta.models = models
+
+      // ---- per-session granularity ---------------------------------- //
+      const bySession = new Map() // sessionId (or file path) -> events[]
+      for (const event of events) {
+        const sid = event.sessionId || fileMeta.get(event.source)?.sessionId || event.source
+        if (!bySession.has(sid)) bySession.set(sid, [])
+        bySession.get(sid).push(event)
+      }
+      const sessions = []
+      for (const [sid, sessionEvents] of bySession) {
+        const meta = fileMeta.get(sessionEvents[0].source) || {}
+        const project = meta.cwd ? path.basename(meta.cwd) : null
+        const summary = buildSessionSummary(sessionEvents, {
+          id: sid,
+          title: project || (typeof sid === 'string' ? path.basename(sid, '.jsonl') : String(sid)),
+          surface: surfaceLabel(meta.entrypoint) || 'Claude Code',
+          estimated: true
+        })
+        if (summary) {
+          summary.provider = this.id
+          summary.providerName = this.name
+          summary.color = this.color
+          summary.branch = meta.branch || null
+          summary.cwd = meta.cwd || null
+          sessions.push(summary)
+        }
+      }
+      base.sessions = selectSessions(sessions, r)
     }
 
     if (allFiles.length === 0) {
-      base.error = 'No Claude Code sessions found locally.'
+      base.error =
+        'No local Claude sessions found. Account-wide limits still shown live; session detail appears once a Claude surface runs on this machine.'
     } else if (base.meta.sessions === 0) {
-      base.error = `No Claude Code usage in this range. ${allFiles.length} local session${allFiles.length === 1 ? '' : 's'} found outside it — try 7D or 30D.`
+      base.error = `No Claude usage in this range. ${allFiles.length} local session${allFiles.length === 1 ? '' : 's'} found outside it — try 7D or 30D.`
     }
 
     const now = Date.now()
@@ -390,7 +551,7 @@ export default {
     const reasonText = {
       'rate-limited': 'Live limits temporarily rate-limited',
       'token-expired': 'OAuth token expired and auto-refresh failed — run `claude` and /login once',
-      'no-token': 'No Claude OAuth token found',
+      'no-token': 'No Claude OAuth token found (checked credentials files and macOS Keychain)',
       network: 'Network unavailable'
     }
 
@@ -456,4 +617,3 @@ export default {
     return base
   }
 }
-

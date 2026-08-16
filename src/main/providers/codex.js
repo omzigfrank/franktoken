@@ -4,7 +4,17 @@
 //  - `token_count` events  -> cumulative token usage; we diff consecutive
 //    snapshots into time-stamped incremental events for range analysis.
 import path from 'node:path'
-import { HOME, exists, listJsonl, readJsonlLines, estimateCost, summarize, normalizeRange } from './util.js'
+import {
+  HOME,
+  exists,
+  listJsonl,
+  readJsonlLines,
+  estimateCost,
+  summarize,
+  normalizeRange,
+  buildSessionSummary,
+  selectSessions
+} from './util.js'
 
 const ROOT = path.join(HOME, '.codex')
 const SESSIONS = path.join(ROOT, 'sessions')
@@ -66,7 +76,7 @@ function windowFrom(snap, id, label) {
 export default {
   id: 'codex',
   name: 'OpenAI Codex',
-  color: '#10a37f',
+  color: '#159d74', // CVD-validated with claude/chatgpt series colors
 
   detect() {
     return exists(SESSIONS) || exists(ROOT)
@@ -84,6 +94,7 @@ export default {
       tokens: emptyTokens(),
       cost: { today: 0, total: 0, currency: 'USD', estimated: true },
       series: { tokensByDay: [], costByDay: [] },
+      sessions: [],
       meta: { lastActivity: null, sessions: 0, model: null }
     }
 
@@ -105,6 +116,7 @@ export default {
     base.meta.lastActivity = files[0].mtimeMs
 
     const events = [] // granular incremental usage events
+    const sessions = [] // per-session summaries for the Sessions explorer
     let latestWindows = null
     let latestWindowTs = 0
     const modelCounts = new Map() // model -> incremental tokens across range
@@ -113,6 +125,8 @@ export default {
       // token_count is cumulative within a session -> diff into increments.
       let prev = null
       let sessionModel = null
+      let sessionCwd = null
+      let sessionId = null
       const snaps = [] // { ts, usage }
       await readJsonlLines(f.path, (obj) => {
         if (!obj) return
@@ -120,6 +134,11 @@ export default {
         const m = obj.payload?.model || obj.model || obj.payload?.turn_context?.model
         if (m) {
           sessionModel = m
+        }
+        const cwd = obj.payload?.cwd || obj.payload?.turn_context?.cwd || obj.cwd
+        if (cwd && !sessionCwd) sessionCwd = cwd
+        if (!sessionId && (obj.payload?.id || obj.payload?.session_id)) {
+          sessionId = obj.payload.id || obj.payload.session_id
         }
         const rl = obj.payload?.rate_limits || obj.rate_limits || obj.info?.rate_limits
         if (rl && (rl.primary || rl.secondary)) {
@@ -137,6 +156,7 @@ export default {
         }
       })
 
+      const sessionEvents = []
       for (const s of snaps) {
         const cur = codexCumulativeUsage(s.usage)
         // incremental delta vs previous snapshot in this session
@@ -149,9 +169,26 @@ export default {
           { input: d.input, output: d.output, cacheWrite: d.cacheWrite, cacheRead: d.cachedInput },
           eventModel || 'gpt-5-codex'
         )
-        events.push({ ts: s.ts, ...d, usd, model: eventModel })
+        const event = { ts: s.ts, ...d, usd, model: eventModel }
+        events.push(event)
+        sessionEvents.push(event)
+      }
+
+      const summary = buildSessionSummary(sessionEvents, {
+        id: sessionId || f.path,
+        title: sessionCwd ? path.basename(sessionCwd) : path.basename(f.path, '.jsonl'),
+        surface: 'Codex CLI',
+        estimated: true
+      })
+      if (summary) {
+        summary.provider = this.id
+        summary.providerName = this.name
+        summary.color = this.color
+        summary.cwd = sessionCwd || null
+        sessions.push(summary)
       }
     }
+    base.sessions = selectSessions(sessions, r)
 
     // All models seen in range, most-used first; meta.model stays the top one.
     const models = [...modelCounts.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m)

@@ -2,8 +2,9 @@
 // Each must satisfy the contract in types.js.
 import codex from './codex.js'
 import claude from './claude.js'
+import chatgpt from './chatgpt.js'
 
-export const providers = [codex, claude]
+export const providers = [claude, codex, chatgpt]
 
 export function detected() {
   return providers.filter((p) => {
@@ -32,6 +33,7 @@ export async function fetchAll(range) {
           tokens: { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 },
           cost: { today: 0, total: 0, currency: 'USD', estimated: true },
           series: { tokensByDay: [], costByDay: [] },
+          sessions: [],
           meta: { lastActivity: null, sessions: 0, model: null }
         }
       }

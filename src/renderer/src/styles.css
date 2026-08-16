@@ -177,6 +177,71 @@ body {
 }
 .link { color: var(--accent); cursor: pointer; }
 
+/* ---------- Filters / chips ---------- */
+.filterrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-card); border: 1px solid var(--border); color: var(--text-dim);
+  font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 999px; cursor: pointer; transition: .15s;
+}
+.chip:hover { color: var(--text); border-color: #2e3a4d; }
+.chip.on { color: var(--accent); border-color: var(--accent); background: rgba(110,168,254,.08); }
+.search {
+  margin-left: auto; background: var(--bg-card); border: 1px solid var(--border); color: var(--text);
+  border-radius: 999px; padding: 6px 12px; font-size: 12px; min-width: 180px; outline: none;
+}
+.search:focus { border-color: var(--accent); }
+.dotkey { display: inline-block; width: 9px; height: 9px; border-radius: 3px; flex: 0 0 9px; }
+
+/* ---------- Sessions table ---------- */
+.stable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.stable th {
+  position: sticky; top: 0; z-index: 1; text-align: left; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .4px; color: var(--text-faint); background: var(--bg-elev);
+  padding: 9px 10px; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; white-space: nowrap;
+}
+.stable th.sorted { color: var(--accent); }
+.stable td { padding: 8px 10px; border-bottom: 1px solid rgba(35,43,57,.55); color: var(--text-dim); white-space: nowrap; }
+.stable td.strong { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.stable tbody tr { cursor: pointer; transition: background .1s; }
+.stable tbody tr:hover { background: rgba(255,255,255,.03); }
+.tcell-title { display: flex; align-items: center; gap: 8px; max-width: 260px; }
+.tcell-title .ttl { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.tcell-title .mini {
+  font-size: 9px; color: var(--text-faint); border: 1px solid var(--border);
+  border-radius: 6px; padding: 1px 5px; flex: 0 0 auto;
+}
+
+/* ---------- Flyout / overlay ---------- */
+.scrim { position: fixed; inset: 0; background: rgba(4,6,10,.55); z-index: 90; backdrop-filter: blur(2px); }
+.flyout {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 92vw); z-index: 100;
+  background: var(--bg-elev); border-left: 1px solid var(--border); box-shadow: var(--shadow);
+  padding: 16px; overflow-y: auto; animation: slidein .18s ease;
+}
+@keyframes slidein { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.overlay {
+  position: fixed; inset: 5vh 6vw; z-index: 100; overflow-y: auto;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: var(--shadow); padding: 18px; animation: popin .16s ease;
+}
+@keyframes popin { from { transform: scale(.985); opacity: 0; } to { transform: none; opacity: 1; } }
+.flyout-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.flyout-title { font-size: 15px; font-weight: 800; margin-bottom: 6px; }
+.legendrow { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--text-dim); }
+.legenditem { display: inline-flex; align-items: center; gap: 6px; }
+.comparebar {
+  position: sticky; bottom: 8px; display: flex; align-items: center; gap: 12px; z-index: 40;
+  background: var(--bg-elev); border: 1px solid var(--accent); border-radius: 12px;
+  padding: 8px 14px; font-size: 12px; color: var(--text-dim); box-shadow: var(--shadow);
+}
+
+/* ---------- Model split (flyout) ---------- */
+.modelsplit { display: grid; gap: 10px; margin-top: 8px; }
+.modelsplit-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.modelsplit-name { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+.modelsplit-val { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
 /* settings */
 .settings { display: grid; gap: 14px; max-width: 460px; }
 .setrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

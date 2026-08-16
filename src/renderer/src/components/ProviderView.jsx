@@ -52,6 +52,7 @@ export default function ProviderView({ s, rangeLbl = '30D' }) {
           )
         })}
         <span className="pill">{sessionSummary}</span>
+        {s.meta?.coverage ? <span className="pill" title="What this provider's numbers cover">{s.meta.coverage}</span> : null}
         {modelFilter ? (
           <span className="pill est" style={{ cursor: 'pointer' }} onClick={() => setModelFilter(null)}>
             filtering: {modelFilter} ✕

@@ -49,6 +49,23 @@ export function rangeLabel(spec, resolved) {
   return '30D'
 }
 
+export function fmtDuration(ms) {
+  if (ms == null) return '—'
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ${m % 60}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
+}
+
+export function fmtTime(ms) {
+  if (!ms) return '—'
+  const d = new Date(ms)
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 export function usageColor(pct) {
   if (pct >= 90) return '#f87171'
   if (pct >= 70) return '#fbbf24'
