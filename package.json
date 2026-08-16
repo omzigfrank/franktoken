@@ -36,6 +36,8 @@
   "build": {
     "appId": "com.frankdiaz.franktoken",
     "productName": "FrankToken",
+    "icon": "resources/icon.png",
+    "artifactName": "${productName}-${version}-${platform}-${arch}.${ext}",
     "files": [
       "out/**/*",
       "resources/**/*"
@@ -43,12 +45,25 @@
     "win": {
       "target": [
         "nsis"
-      ],
-      "signAndEditExecutable": false
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "FrankToken"
     },
     "mac": {
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "category": "public.app-category.developer-tools"
     },
