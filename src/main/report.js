@@ -299,19 +299,28 @@ function hBars(container, rows, { fmt = fmtTok } = {}) {
   new ResizeObserver(render).observe(container);
 }
 
+// Cumulative token timeline from a session's request list: [{ts, total}].
+function timelineOf(s) {
+  const reqs = (s.requests || []).slice().sort((a, b) => a.timestamp - b.timestamp);
+  let run = 0;
+  return reqs.map((r) => { run += r.total || 0; return { ts: r.timestamp, total: run }; });
+}
+
 // Cumulative timelines aligned to each session's start (minutes).
 function timelineChart(container, sessions, colors, { height = 240 } = {}) {
-  const maxMin = Math.max(1, ...sessions.map((s) => (s.timeline.at(-1).ts - s.timeline[0].ts) / 60000));
+  const tls = sessions.map(timelineOf).map((tl) => (tl.length ? tl : [{ ts: 0, total: 0 }]));
+  const maxMin = Math.max(1, ...tls.map((tl) => (tl.at(-1).ts - tl[0].ts) / 60000));
   const buckets = 60;
   const xKeys = Array.from({ length: buckets + 1 }, (_, i) => (i * maxMin) / buckets);
   const series = sessions.map((s, si) => {
-    const start = s.timeline[0].ts;
+    const tl = tls[si];
+    const start = tl[0].ts;
     const pts = new Map();
     let j = 0;
     for (const x of xKeys) {
-      while (j < s.timeline.length - 1 && (s.timeline[j + 1].ts - start) / 60000 <= x) j++;
-      const done = (s.timeline.at(-1).ts - start) / 60000 < x;
-      pts.set(x, done ? s.timeline.at(-1).total : s.timeline[j].total);
+      while (j < tl.length - 1 && (tl[j + 1].ts - start) / 60000 <= x) j++;
+      const done = (tl.at(-1).ts - start) / 60000 < x;
+      pts.set(x, done ? tl.at(-1).total : tl[j].total);
     }
     return { name: s.title || s.id, color: colors[si % colors.length], points: pts };
   });
@@ -324,7 +333,7 @@ const allSessions = provs.flatMap((p) => (p.sessions || []).map((s) => ({ ...s, 
 const allModels = [];
 for (const p of provs) for (const m in p.byModel) {
   allModels.push({ model: m, provider: p.id, providerName: p.name, color: p.color, ...p.byModel[m],
-    sessions: (p.sessions || []).filter((s) => (s.models || []).some((x) => x.model === m)).length });
+    sessions: (p.sessions || []).filter((s) => (s.models || []).includes(m)).length });
 }
 allModels.sort((a, b) => b.tokens.total - a.tokens.total);
 
@@ -409,9 +418,9 @@ function renderOverview() {
 
 // ---------- sessions ----------
 const sCols = [
-  ['Session', (s) => s.title || s.id], ['Provider', (s) => s.providerName], ['Start', (s) => s.start],
-  ['Length', (s) => s.durationMs], ['Calls', (s) => s.events], ['Input', (s) => s.tokens.input],
-  ['Output', (s) => s.tokens.output], ['Tokens', (s) => s.tokens.total], ['Cost', (s) => s.usd]
+  ['Session', (s) => s.title || s.id], ['Provider', (s) => s.providerName], ['Start', (s) => s.startedAt],
+  ['Length', (s) => s.durationMs], ['Requests', (s) => s.requestCount], ['Input', (s) => s.tokens.input],
+  ['Output', (s) => s.tokens.output], ['Tokens', (s) => s.tokens.total], ['Cost', (s) => s.costUsd]
 ];
 let sSort = 2, sDir = -1, sProv = null, sQuery = '';
 
@@ -439,7 +448,7 @@ function renderSessions() {
     const q = sQuery.trim().toLowerCase();
     const rows = allSessions
       .filter((s) => !sProv || s.provider === sProv)
-      .filter((s) => !q || ((s.title || '') + ' ' + s.id + ' ' + (s.model || '') + ' ' + (s.surface || '')).toLowerCase().includes(q))
+      .filter((s) => !q || ((s.title || '') + ' ' + s.id + ' ' + (s.primaryModel || '') + ' ' + (s.product || '')).toLowerCase().includes(q))
       .sort((a, b) => { const av = sCols[sSort][1](a), bv = sCols[sSort][1](b); return (av > bv ? 1 : av < bv ? -1 : 0) * sDir; });
     const table = el('table');
     const thead = el('thead'); const trh = el('tr');
@@ -465,16 +474,16 @@ function renderSessions() {
       const tdT = el('td'); const dk = el('span', 'dotkey'); dk.style.background = s.color; dk.style.marginRight = '7px';
       tdT.appendChild(dk); const tt = el('span', null, s.title || s.id); tt.style.color = 'var(--ink)'; tt.style.fontWeight = '600';
       tdT.appendChild(tt);
-      if (s.surface) { const sf = el('span', 'pill', s.surface); sf.style.marginLeft = '7px'; sf.style.fontSize = '9px'; sf.style.padding = '1px 6px'; tdT.appendChild(sf); }
+      if (s.product) { const sf = el('span', 'pill', s.product); sf.style.marginLeft = '7px'; sf.style.fontSize = '9px'; sf.style.padding = '1px 6px'; tdT.appendChild(sf); }
       tr.appendChild(tdT);
       tr.appendChild(el('td', null, s.providerName));
-      tr.appendChild(el('td', null, fmtTime(s.start)));
+      tr.appendChild(el('td', null, fmtTime(s.startedAt)));
       tr.appendChild(el('td', null, fmtDur(s.durationMs)));
-      tr.appendChild(el('td', null, String(s.events)));
+      tr.appendChild(el('td', null, String(s.requestCount)));
       tr.appendChild(el('td', null, fmtTok(s.tokens.input)));
       tr.appendChild(el('td', null, fmtTok(s.tokens.output)));
       tr.appendChild(el('td', 'strong', fmtTok(s.tokens.total)));
-      const tdC = el('td', 'strong', fmtUsd(s.usd)); tdC.style.color = 'var(--good)'; tr.appendChild(tdC);
+      const tdC = el('td', 'strong', fmtUsd(s.costUsd)); tdC.style.color = 'var(--good)'; tr.appendChild(tdC);
       tr.addEventListener('click', () => openSession(s));
       tbody.appendChild(tr);
     }
@@ -497,20 +506,20 @@ function openSession(s) {
   left.appendChild(el('div', 'fly-title', s.title || s.id));
   const meta = el('div', 'sub');
   const pp = el('span', 'pill', s.providerName); pp.style.color = s.color; pp.style.borderColor = s.color; meta.appendChild(pp);
-  if (s.surface) { const sp = el('span', 'pill', s.surface); sp.style.marginLeft = '6px'; meta.appendChild(sp); }
-  if (s.branch) { const bp = el('span', 'pill', '⎇ ' + s.branch); bp.style.marginLeft = '6px'; meta.appendChild(bp); }
+  if (s.product) { const sp = el('span', 'pill', s.product); sp.style.marginLeft = '6px'; meta.appendChild(sp); }
+  if (s.sourceLabel) { const sl = el('span', 'pill', s.sourceLabel); sl.style.marginLeft = '6px'; meta.appendChild(sl); }
   left.appendChild(meta);
   head.appendChild(left);
   const x = el('button', 'x', '✕'); x.addEventListener('click', close); head.appendChild(x);
   fly.appendChild(head);
 
   const grid = el('div', 'kpis');
-  grid.appendChild(kpi('Started', fmtTime(s.start)));
-  grid.appendChild(kpi('Ended', fmtTime(s.end)));
+  grid.appendChild(kpi('Started', fmtTime(s.startedAt)));
+  grid.appendChild(kpi('Ended', fmtTime(s.endedAt)));
   grid.appendChild(kpi('Length', fmtDur(s.durationMs)));
-  grid.appendChild(kpi('Model calls', String(s.events)));
+  grid.appendChild(kpi('Requests', String(s.requestCount)));
   grid.appendChild(kpi('Tokens', fmtTok(s.tokens.total)));
-  grid.appendChild(kpi('Cost (est.)', fmtUsd(s.usd), 'var(--good)'));
+  grid.appendChild(kpi('Cost (' + (s.costKind || 'est.') + ')', fmtUsd(s.costUsd), 'var(--good)'));
   grid.appendChild(kpi('Uncached input', fmtTok(s.tokens.input)));
   grid.appendChild(kpi('Cache read', fmtTok(s.tokens.cachedInput)));
   grid.appendChild(kpi('Output', fmtTok(s.tokens.output)));
@@ -519,19 +528,28 @@ function openSession(s) {
   const c = card('Cumulative tokens over the session');
   const ch = el('div'); c.appendChild(ch);
   fly.appendChild(c);
-  if (s.timeline?.length > 1) timelineChart(ch, [s], [s.color], { height: 180 });
-  else ch.appendChild(el('div', 'sub', 'Single-point session.'));
+  if ((s.requests || []).length > 1) timelineChart(ch, [s], [s.color], { height: 180 });
+  else ch.appendChild(el('div', 'sub', 'Single-request session.'));
   const pace = s.durationMs > 60000 ? s.tokens.total / (s.durationMs / 60000) : null;
   if (pace) c.appendChild(el('div', 'sub', '≈ ' + fmtTok(Math.round(pace)) + ' tokens/min'));
 
-  if (s.models?.length) {
+  if ((s.models || []).length) {
     const mc = card('Models in this session');
     mc.style.marginTop = '12px';
-    const rows = s.models.map((m, i) => ({ label: m.model, value: m.total, color: CMP[i % CMP.length], hint: m.model + ' · ' + fmtUsd(m.usd) }));
+    const byModel = new Map();
+    for (const r of s.requests || []) {
+      if (!r.model) continue;
+      const agg = byModel.get(r.model) || { total: 0, usd: 0 };
+      agg.total += r.total || 0;
+      agg.usd += r.costUsd || 0;
+      byModel.set(r.model, agg);
+    }
+    const rows = [...byModel.entries()]
+      .sort((a, b) => b[1].total - a[1].total)
+      .map(([m, v], i) => ({ label: m, value: v.total, color: CMP[i % CMP.length], hint: m + ' · ' + fmtUsd(v.usd) }));
     const bc = el('div'); mc.appendChild(bc); hBars(bc, rows);
     fly.appendChild(mc);
   }
-  if (s.cwd) fly.appendChild(el('div', 'sub', 'Workspace: ' + s.cwd));
   modal.appendChild(scrim); modal.appendChild(fly);
 }
 
@@ -554,7 +572,7 @@ $('#comparego').addEventListener('click', () => {
   ov.appendChild(head);
   const lg = el('div', 'legendrow');
   sel.forEach((s, i) => { const k = el('span', 'key'); const d = el('span', 'dotkey'); d.style.background = CMP[i % CMP.length]; k.appendChild(d);
-    k.appendChild(el('span', null, (s.title || s.id) + ' · ' + fmtTime(s.start))); lg.appendChild(k); });
+    k.appendChild(el('span', null, (s.title || s.id) + ' · ' + fmtTime(s.startedAt))); lg.appendChild(k); });
   ov.appendChild(lg);
   const tc = card('Token burn, minute by minute (aligned to each session\\u2019s start)');
   tc.style.marginTop = '12px';
@@ -563,7 +581,7 @@ $('#comparego').addEventListener('click', () => {
   const grid = el('div', 'grid cols-2'); grid.style.marginTop = '12px';
   const metrics = [
     ['Total tokens', (s) => s.tokens.total, fmtTok],
-    ['Est. cost (USD)', (s) => s.usd, fmtUsd],
+    ['Est. cost (USD)', (s) => s.costUsd, fmtUsd],
     ['Length (minutes)', (s) => Math.round(s.durationMs / 60000), (v) => v + 'm'],
     ['Tokens per minute', (s) => s.durationMs > 60000 ? Math.round(s.tokens.total / (s.durationMs / 60000)) : s.tokens.total, fmtTok]
   ];

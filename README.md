@@ -1,90 +1,171 @@
 # FrankToken
 
-An **OS-agnostic, GUI-rich** system-tray app that shows your AI usage limits, token
-consumption, per-session detail, and estimated USD cost across providers. Runs on
-**Windows, macOS, and Linux** (Electron + React).
+FrankToken is a live, fidelity-aware AI consumption observatory. It combines request traces, local CLI sessions, provider usage aggregates, and USD cost into one Electron dashboard (Windows, macOS, Linux) and one shareable browser report.
 
-![tray + dashboard](resources/icon.png)
+The v0.3 rebuild adds:
 
-## What it does
+- A central Hub that accepts OTLP/HTTP traces, logs, and metrics in JSON or protobuf.
+- Server-sent updates to every open report as soon as a new signal arrives.
+- Request-level session drill-down with timestamps, duration, token mix, model, device/user metadata, and cost.
+- Cross-session and cross-model comparison charts.
+- A coverage control room that labels the detail and freshness actually supplied by each product.
+- Docker deployment and token-protected external sharing.
+- Built-in OpenAI Organization Usage and Anthropic Usage API reconciliation.
+- **Live, account-wide Claude limits** from `api/oauth/usage` — the pool every Claude surface
+  draws down (Claude.ai, Claude Code CLI/web/desktop/IDE, Cowork, Design, Office plugins), so
+  the 5-hour / weekly / per-model windows reflect usage from **any signed-in device**. OAuth
+  credentials are read from `.credentials.json`, `CLAUDE_CONFIG_DIR`, `~/.config/claude`, or
+  the **macOS Keychain**, auto-refreshed, with tolerant parsing across every observed
+  `limits[]` API shape.
+- **File watchers** on every local data root — the dashboard refreshes within seconds of a
+  transcript changing, without waiting for a poll tick.
+- **Session surface tagging**: local Claude sessions carry the surface they ran on
+  (CLI / web / desktop / IDE / Cowork) from transcript metadata, filterable in the explorer.
+- **ChatGPT / ChatGPT Work import**: OpenAI exposes no usage API for consumer ChatGPT, so drop
+  the official data export's `conversations.json` into `~/.franktoken/imports/chatgpt/` (or
+  `chatgpt-work/`) and conversations become sessions with timestamps, model slugs, and
+  clearly-labeled estimated tokens (chars/4).
+- **One-click shareable snapshot**: the "⬡" button exports a **single self-contained HTML
+  report** (no external assets) with interactive charts, session flyouts, and 4-way session
+  comparison overlays — for sharing without standing up a Hub.
 
-- **System-tray icon** with a live tooltip + context menu showing the peak rate-limit window.
-- **Live, account-wide Claude limits**: the 5-hour / weekly / per-model windows come from the
-  same usage API every Claude surface draws down — so they reflect usage from **any device
-  you sign into**, whether it happened in Claude.ai, Claude Code (CLI/web/desktop/IDE),
-  Claude Cowork, Claude Design, or the Office plugins.
-- **Real-time**: file watchers on every provider's data root push updates to the dashboard
-  within seconds of a session streaming tokens — no waiting for the next poll.
-- **Sessions explorer**: every session with timestamps, length, model calls, token breakdown
-  (input / cached / output), models used, and estimated USD cost. Sortable, filterable by
-  provider/surface, searchable. Click a session for a **flyout** with its cumulative token
-  timeline and per-model split. Pick up to 4 sessions for a **comparison overlay** (aligned
-  burn curves + total/cost/length/pace bars).
-- **Models view**: every model compared head-to-head — tokens, cost, sessions, effective
-  $/1M tokens, and daily-usage overlay.
-- **Shareable interactive report**: one click ("⬡ Share") exports a **single self-contained
-  HTML file** — dark, interactive, zero external dependencies — with the overview, every
-  session (flyouts + comparisons), and the model head-to-heads. Send it to anyone; it opens
-  in any browser.
-- **Privacy-first**: everything is parsed **on-device**. Nothing is uploaded; the report is a
-  local file you choose to share.
+![FrankToken icon](resources/icon.png)
 
-## Providers & coverage (v0.2)
+## What “live” means
 
-| Provider | Live limits | Token/session detail | Notes |
-|----------|-------------|----------------------|-------|
-| **Claude** (all surfaces) | ✅ account-wide, every device & surface, via `api/oauth/usage` | Local transcripts: `~/.claude/projects/**` (+ `CLAUDE_CONFIG_DIR`, `~/.config/claude`) | OAuth token read from `.credentials.json` **or the macOS Keychain**; auto-refreshed. Sessions are tagged with their surface (CLI / web / desktop / IDE / Cowork) from transcript metadata. |
-| **OpenAI Codex** | ✅ from CLI `rate_limits` events | `~/.codex/sessions/**/*.jsonl` | Cumulative counters diffed into per-event deltas. |
-| **ChatGPT / ChatGPT Work** | ❌ (OpenAI exposes no usage API for ChatGPT) | Import-based: drop `conversations.json` from the official data export into `~/.franktoken/imports/chatgpt/` (or `chatgpt-work/`) | Tokens are **estimates** (chars/4) — exports carry text, not token counts. Conversations become sessions with timestamps and model slugs. |
+FrankToken does not pretend every vendor surface exposes the same data. It takes the most granular official feed available and labels both coverage and freshness.
 
-**Being precise about what's possible:** per-token metering for Claude.ai chat, Claude
-Design, Cowork, and the Office plugins is not exposed by any API — but because Anthropic's
-rate limits are unified, the **live windows here already include that usage**, from every
-device. Session-level granularity exists wherever transcripts exist locally (any Claude
-Code-family surface on this machine), plus whatever you import for ChatGPT.
+| Surface | Best supported source | Best detail | Typical freshness |
+|---|---|---:|---:|
+| Claude Code | OpenTelemetry + local transcripts | Request and session | Seconds |
+| Claude Cowork | OpenTelemetry | Prompt/request/tool metadata | Seconds |
+| Claude for PowerPoint | Office Agent OTLP/HTTP | Turn/request/tool metadata | Seconds |
+| Claude for Word | Office Agent OTLP/HTTP | Turn/request/tool metadata | Seconds |
+| Claude web | Enterprise Analytics / Compliance adapter | Product/model or auditable activity | Provider-delayed |
+| Claude Design | Enterprise Analytics adapter | Product/model aggregate | Provider-delayed |
+| Claude API | Usage API | Minute × model × workspace/key | About five minutes |
+| Codex | Local transcripts; workspace analytics adapter | Local request; cloud aggregate | Seconds locally |
+| ChatGPT | Workspace analytics / Compliance adapter | Workspace activity | Provider-defined |
+| ChatGPT Work | Workspace and Codex analytics adapters | Workspace/user/model aggregate | Provider-defined |
+| OpenAI API | Organization Usage API | Minute × model × project/user/key | Minutes |
+| ChatGPT (personal) | Official data export import | Conversation/message (estimated tokens) | Manual |
 
-Costs are **estimates** from a built-in list-price table — treat as guidance, not billing.
+Vendor reality matters: provider admin APIs are reconciliation feeds, not second-by-second event streams. Public provider documentation also does not promise personal ChatGPT or Claude users a token-level export for every web conversation. FrankToken therefore never scrapes private UI state or invents per-session precision.
 
-## Add a provider (plugin interface)
+To add a provider, drop a file in `src/main/providers/` that default-exports the object
+described in [`types.js`](src/main/providers/types.js) (`id`, `name`, `color`, `detect()`,
+`fetch()`), emit `sessions[]` via [`sessions.js`](src/main/providers/sessions.js), and add it
+to the array in [`registry.js`](src/main/providers/registry.js). The UI, tray, charts, hub
+sync, and report pick it up automatically.
 
-Drop a file in `src/main/providers/` that default-exports the object described in
-[`types.js`](src/main/providers/types.js) (`id`, `name`, `color`, `detect()`, `fetch()`), then add
-it to the array in [`registry.js`](src/main/providers/registry.js). The UI, tray, charts,
-sessions explorer, and report pick it up automatically (`fetch()` may include a `sessions[]`
-array — see `buildSessionSummary` in [`util.js`](src/main/providers/util.js)).
-
-## Develop
-
-```bash
-npm install
-npm run dev      # hot-reload dev
-npm test         # node --test
-```
-
-## Build a desktop installer
-
-```bash
-npm run dist:win    # NSIS installer (Windows)
-npm run dist:mac    # dmg
-npm run dist:linux  # AppImage
-```
+Official capability references: [Claude Code monitoring](https://code.claude.com/docs/en/monitoring-usage), [Claude Code Analytics API](https://platform.claude.com/docs/en/manage-claude/claude-code-analytics-api), [Cowork OpenTelemetry](https://support.claude.com/en/articles/14477985-monitor-claude-cowork-activity-with-opentelemetry), [Office Agents OpenTelemetry](https://support.claude.com/en/articles/14447276-configure-a-custom-opentelemetry-collector-for-office-agents), [Anthropic Usage and Cost API](https://platform.claude.com/docs/en/manage-claude/usage-cost-api), [OpenAI Organization Usage API](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage), and [ChatGPT workspace analytics](https://learn.chatgpt.com/docs/enterprise/workspace-analytics).
 
 ## Architecture
 
+```text
+Claude Code ─┐
+Cowork ──────┤ OTLP/HTTP (seconds) ───────────┐
+Word/PPT ────┘                                │
+                                               ▼
+Provider admin APIs ── delayed reconcile ─ FrankToken Hub ── SSE ── shareable report
+                                               ▲                    desktop clients
+Codex/Claude local transcripts ─ desktop ──────┘
 ```
-src/
-  main/                 Electron main process (Node)
-    index.js            tray, window, polling + fs watchers, IPC, settings
-    report.js           self-contained interactive HTML report generator
-    providers/          on-device parsers (the plugin system)
-      util.js           paths, JSONL streaming, pricing, cost, session summaries
-      claude.js         Claude — all surfaces (live limits + local transcripts)
-      codex.js          OpenAI Codex
-      chatgpt.js        ChatGPT / ChatGPT Work (export imports)
-      registry.js       provider list + fetchAll()
-  preload/index.js      contextBridge API
-  renderer/             React dashboard (Recharts visuals)
-    components/         Overview, ProviderView, SessionsView, ModelsView, …
+
+The Hub stores only telemetry metadata in append-only JSONL. It does not need prompt text, generated text, document contents, or source code.
+
+## Run the desktop app
+
+```bash
+npm install
+npm run dev
 ```
+
+The desktop app reads `~/.codex/sessions/**/*.jsonl` and `~/.claude/projects/**/*.jsonl`. In **Settings**, add a FrankToken Hub URL and its read token to merge local history with every device reporting to that Hub.
+
+Build an installer with `npm run dist:win`, `npm run dist:mac`, or `npm run dist:linux`.
+
+## Deploy the Hub
+
+Copy the example environment file, replace both secrets with independent random values, and start Docker Compose:
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+On PowerShell, generate a secret with:
+
+```powershell
+[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLower()
+```
+
+Put the Hub behind HTTPS before sending telemetry over the internet. The default standalone host is `127.0.0.1`; the Docker image intentionally binds `0.0.0.0` and requires secrets through Compose.
+
+Open the read-only external report at:
+
+```text
+https://tokens.example.com/share?token=<FRANKTOKEN_SHARE_TOKEN>
+```
+
+The ingest token and share token serve different purposes. Do not place the ingest token in a browser URL or share it with report visitors.
+
+## Connect real-time exporters
+
+FrankToken exposes standard OTLP/HTTP endpoints:
+
+```text
+POST /v1/traces
+POST /v1/logs
+POST /v1/metrics
+Authorization: Bearer <FRANKTOKEN_INGEST_TOKEN>
+```
+
+A typical Claude Code environment points its OTLP exporter at the Hub:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://tokens.example.com
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <FRANKTOKEN_INGEST_TOKEN>"
+export OTEL_METRICS_EXPORTER=otlp
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_TRACES_EXPORTER=otlp
+```
+
+Configure Cowork and Office Agents with the same HTTPS collector in their organization telemetry settings. FrankToken maps Office `agent.surface` values to Word, PowerPoint, Excel, and Outlook automatically.
+
+For a source that cannot emit OTLP, use the [normalized ingest schema](docs/INGEST_SCHEMA.md). Stable event keys make retries idempotent.
+
+## Cloud reconciliation
+
+The Hub polls enabled organization APIs once per minute and deduplicates their minute buckets:
+
+```text
+FRANKTOKEN_OPENAI_ADMIN_KEY=...
+FRANKTOKEN_ANTHROPIC_ADMIN_KEY=...
+FRANKTOKEN_ANTHROPIC_ANALYTICS_KEY=...
+FRANKTOKEN_CLOUD_POLL_SECONDS=60
+```
+
+The Anthropic keys are intentionally separate: `ANTHROPIC_ADMIN_KEY` reads Claude API usage from Claude Console, while `ANTHROPIC_ANALYTICS_KEY` reads product-level Claude Enterprise usage for chat, Claude Code, Cowork, Office Agents, and Claude Design. The provider does not allow the two key types to be interchanged. All keys are read only by the Hub process and are never returned to the browser.
+
+## Cost semantics
+
+- **Provider** means the amount came from a billing/usage source capable of reporting USD.
+- **Estimated** means FrankToken multiplied mutually exclusive token categories by its local model pricing table.
+- The UI always labels estimates; it never presents them as an invoice.
+
+Pricing changes over time, so provider billing remains the source of truth. Add new pricing aliases in `src/main/providers/util.js` when models change.
+
+## Test and build
+
+```bash
+npm test
+npm run build
+npm run hub
+```
+
+The test suite covers local transcript normalization, session aggregation, OTLP JSON, and OTLP protobuf decoding.
 
 MIT.

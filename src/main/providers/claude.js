@@ -15,17 +15,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import {
-  HOME,
-  exists,
-  listJsonl,
-  readJsonlLines,
-  estimateCost,
-  summarize,
-  normalizeRange,
-  buildSessionSummary,
-  selectSessions
-} from './util.js'
+import { HOME, exists, listJsonl, readJsonlLines, estimateCost, summarize, normalizeRange } from './util.js'
+import { buildSessions, sessionCoverage } from './sessions.js'
 
 // Config dir: Claude Code honors CLAUDE_CONFIG_DIR; XDG installs may use
 // ~/.config/claude. Scan every root that exists so no surface is missed.
@@ -117,7 +108,14 @@ async function refreshAccessToken() {
   refreshInFlight = (async () => {
     try {
       const source = readCredentialsFile() || readKeychainCredentials()
-      const refreshToken = source?.oauth?.refreshToken || memoryToken?.refreshToken
+      // Prefer the newest refresh token we hold. Keychain-backed credentials
+      // can't be rewritten by us, so after a rotation the keychain still
+      // carries the OLD refresh token — using it again would fail once the
+      // server invalidates rotated tokens. File-backed credentials are kept
+      // current (we persist rotations below), so the file wins there.
+      const refreshToken = source?.file
+        ? source.oauth?.refreshToken || memoryToken?.refreshToken
+        : memoryToken?.refreshToken || source?.oauth?.refreshToken
       if (!refreshToken) return null
       const ctrl = new AbortController()
       const t = setTimeout(() => ctrl.abort(), 10_000)
@@ -428,15 +426,12 @@ export default {
       cost: { today: 0, total: 0, currency: 'USD', estimated: true },
       series: { tokensByDay: [], costByDay: [] },
       sessions: [],
-      meta: {
-        lastActivity: null,
-        sessions: 0,
-        model: null,
-        // Rate-limit windows come from the account-wide usage API and cover
-        // every surface & device (Claude.ai, Code, Cowork, Design, plugins).
-        // Token/session detail below is parsed from THIS machine's files.
-        coverage: 'Limits: account-wide, all surfaces & devices · Sessions: this machine'
-      }
+      // Rate-limit windows come from the account-wide usage API and cover
+      // every surface & device (Claude.ai, Code, Cowork, Design, plugins).
+      // Session detail is parsed from this machine's transcripts (plus the
+      // Hub's remote sessions, merged upstream in the poller).
+      coverage: sessionCoverage('local', 'seconds'),
+      meta: { lastActivity: null, sessions: 0, model: null }
     }
 
     if (!this.detect()) {
@@ -509,32 +504,23 @@ export default {
       base.meta.models = models
 
       // ---- per-session granularity ---------------------------------- //
-      const bySession = new Map() // sessionId (or file path) -> events[]
+      // Enrich events with transcript metadata so buildSessions can name each
+      // session after its project and tag it with the surface it ran on
+      // (CLI / web / desktop / IDE / Cowork), then emit the shared session
+      // shape the dashboard, hub sync, and report all consume.
       for (const event of events) {
-        const sid = event.sessionId || fileMeta.get(event.source)?.sessionId || event.source
-        if (!bySession.has(sid)) bySession.set(sid, [])
-        bySession.get(sid).push(event)
+        const meta = fileMeta.get(event.source) || {}
+        if (meta.cwd) event.title = path.basename(meta.cwd)
+        event.product = surfaceLabel(meta.entrypoint) || 'Claude Code'
       }
-      const sessions = []
-      for (const [sid, sessionEvents] of bySession) {
-        const meta = fileMeta.get(sessionEvents[0].source) || {}
-        const project = meta.cwd ? path.basename(meta.cwd) : null
-        const summary = buildSessionSummary(sessionEvents, {
-          id: sid,
-          title: project || (typeof sid === 'string' ? path.basename(sid, '.jsonl') : String(sid)),
-          surface: surfaceLabel(meta.entrypoint) || 'Claude Code',
-          estimated: true
-        })
-        if (summary) {
-          summary.provider = this.id
-          summary.providerName = this.name
-          summary.color = this.color
-          summary.branch = meta.branch || null
-          summary.cwd = meta.cwd || null
-          sessions.push(summary)
-        }
-      }
-      base.sessions = selectSessions(sessions, r)
+      base.sessions = buildSessions(events, r, {
+        provider: 'claude',
+        product: 'Claude Code',
+        sourceType: 'local',
+        sourceLabel: 'Claude transcript',
+        freshness: 'seconds',
+        costKind: 'estimated'
+      })
     }
 
     if (allFiles.length === 0) {
@@ -602,6 +588,14 @@ export default {
     base.cost = sum.cost
     base.series = sum.series
     base.range = sum.range
+    base.sessions = buildSessions(events, r, {
+      provider: 'claude',
+      product: 'Claude Code',
+      sourceType: 'local',
+      sourceLabel: 'Claude Code transcript',
+      freshness: 'seconds',
+      costKind: 'estimated'
+    })
 
     // Per-model breakdown so the UI can filter by clicking a model badge.
     // Models with zero tokens inside the range are dropped (recently-touched

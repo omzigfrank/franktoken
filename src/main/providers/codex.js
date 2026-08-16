@@ -4,17 +4,8 @@
 //  - `token_count` events  -> cumulative token usage; we diff consecutive
 //    snapshots into time-stamped incremental events for range analysis.
 import path from 'node:path'
-import {
-  HOME,
-  exists,
-  listJsonl,
-  readJsonlLines,
-  estimateCost,
-  summarize,
-  normalizeRange,
-  buildSessionSummary,
-  selectSessions
-} from './util.js'
+import { HOME, exists, listJsonl, readJsonlLines, estimateCost, summarize, normalizeRange } from './util.js'
+import { buildSessions, sessionCoverage } from './sessions.js'
 
 const ROOT = path.join(HOME, '.codex')
 const SESSIONS = path.join(ROOT, 'sessions')
@@ -95,6 +86,7 @@ export default {
       cost: { today: 0, total: 0, currency: 'USD', estimated: true },
       series: { tokensByDay: [], costByDay: [] },
       sessions: [],
+      coverage: sessionCoverage('local', 'seconds'),
       meta: { lastActivity: null, sessions: 0, model: null }
     }
 
@@ -116,7 +108,6 @@ export default {
     base.meta.lastActivity = files[0].mtimeMs
 
     const events = [] // granular incremental usage events
-    const sessions = [] // per-session summaries for the Sessions explorer
     let latestWindows = null
     let latestWindowTs = 0
     const modelCounts = new Map() // model -> incremental tokens across range
@@ -156,7 +147,6 @@ export default {
         }
       })
 
-      const sessionEvents = []
       for (const s of snaps) {
         const cur = codexCumulativeUsage(s.usage)
         // incremental delta vs previous snapshot in this session
@@ -169,26 +159,17 @@ export default {
           { input: d.input, output: d.output, cacheWrite: d.cacheWrite, cacheRead: d.cachedInput },
           eventModel || 'gpt-5-codex'
         )
-        const event = { ts: s.ts, ...d, usd, model: eventModel }
-        events.push(event)
-        sessionEvents.push(event)
-      }
-
-      const summary = buildSessionSummary(sessionEvents, {
-        id: sessionId || f.path,
-        title: sessionCwd ? path.basename(sessionCwd) : path.basename(f.path, '.jsonl'),
-        surface: 'Codex CLI',
-        estimated: true
-      })
-      if (summary) {
-        summary.provider = this.id
-        summary.providerName = this.name
-        summary.color = this.color
-        summary.cwd = sessionCwd || null
-        sessions.push(summary)
+        events.push({
+          ts: s.ts,
+          ...d,
+          usd,
+          model: eventModel,
+          source: f.path,
+          sessionId: sessionId || null,
+          title: sessionCwd ? path.basename(sessionCwd) : null
+        })
       }
     }
-    base.sessions = selectSessions(sessions, r)
 
     // All models seen in range, most-used first; meta.model stays the top one.
     const models = [...modelCounts.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m)
@@ -210,6 +191,14 @@ export default {
     base.cost = sum.cost
     base.series = sum.series
     base.range = sum.range
+    base.sessions = buildSessions(events, r, {
+      provider: 'codex',
+      product: 'Codex',
+      sourceType: 'local',
+      sourceLabel: 'Codex transcript',
+      freshness: 'seconds',
+      costKind: 'estimated'
+    })
 
     // Per-model breakdown so the UI can filter by clicking a model badge.
     // Models with zero tokens inside the range are dropped.

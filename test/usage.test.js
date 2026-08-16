@@ -10,7 +10,9 @@ import {
 } from '../src/main/providers/claude.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
 import { estimateTextTokens, chatgptConversationEvents } from '../src/main/providers/chatgpt.js'
-import { summarize, buildSessionSummary, cumulativeTimeline, selectSessions, priceFor, PRICING } from '../src/main/providers/util.js'
+import { summarize, priceFor, PRICING } from '../src/main/providers/util.js'
+import { buildSessions } from '../src/main/providers/sessions.js'
+import { mergeSnapshots } from '../src/main/providers/hub.js'
 
 test('Claude usage keeps one complete snapshot per message id', () => {
   const partial = claudeUsageEvent({
@@ -120,43 +122,20 @@ test('surface labels map transcript entrypoints to human names', () => {
   assert.equal(surfaceLabel(null), null)
 })
 
-test('session summary aggregates tokens, duration, models, and a bounded timeline', () => {
-  const t0 = Date.parse('2026-08-15T10:00:00Z')
-  const events = Array.from({ length: 200 }, (_, i) => ({
-    ts: t0 + i * 60_000,
-    input: 10,
-    cachedInput: 5,
-    cacheWrite: 0,
-    output: 20,
-    reasoning: 0,
-    total: 35,
-    usd: 0.001,
-    model: i % 2 ? 'claude-opus-5' : 'claude-haiku-4-5'
-  }))
-  const s = buildSessionSummary(events, { id: 'sess-1', title: 'proj', surface: 'Claude Code · CLI' })
-  assert.equal(s.events, 200)
-  assert.equal(s.tokens.total, 7000)
-  assert.equal(s.durationMs, 199 * 60_000)
-  assert.equal(s.models.length, 2)
-  assert.ok(s.timeline.length <= 60)
-  assert.equal(s.timeline.at(-1).total, 7000)
-  assert.equal(buildSessionSummary([], { id: 'empty' }), null)
-})
-
-test('cumulative timeline keeps first and last points when downsampling', () => {
-  const events = Array.from({ length: 500 }, (_, i) => ({ ts: i, total: 1, usd: 0 }))
-  const tl = cumulativeTimeline(events, 50)
-  assert.equal(tl.length, 50)
-  assert.equal(tl[0].total, 1)
-  assert.equal(tl.at(-1).total, 500)
-})
-
-test('session selection clips to range, sorts newest-first, and caps volume', () => {
-  const day = 86_400_000
-  const now = Date.now()
-  const mk = (offset) => ({ id: String(offset), start: now - offset * day, end: now - offset * day + 3600_000 })
-  const picked = selectSessions([mk(1), mk(40), mk(2)], { from: now - 30 * day, to: now })
-  assert.deepEqual(picked.map((s) => s.id), ['1', '2'])
+test('sessions carry per-event surface products and titles through buildSessions', () => {
+  const start = Date.parse('2026-08-15T10:00:00Z')
+  const sessions = buildSessions(
+    [
+      { ts: start, sessionId: 's1', title: 'franktoken', product: 'Cowork', model: 'claude-opus-5', input: 5, cachedInput: 0, cacheWrite: 0, output: 5, reasoning: 0, total: 10, usd: 0.001 },
+      { ts: start + 1_000, sessionId: 's1', title: 'franktoken', product: 'Cowork', model: 'claude-opus-5', input: 5, cachedInput: 0, cacheWrite: 0, output: 5, reasoning: 0, total: 10, usd: 0.001 }
+    ],
+    { from: start - 1, to: start + 10_000 },
+    { provider: 'claude', product: 'Claude Code', sourceType: 'local' }
+  )
+  assert.equal(sessions.length, 1)
+  assert.equal(sessions[0].product, 'Cowork')
+  assert.equal(sessions[0].title, 'franktoken')
+  assert.equal(sessions[0].tokens.total, 20)
 })
 
 test('pricing matches most-specific model key first', () => {
@@ -208,5 +187,66 @@ test('summary preserves cache-write tokens without inflating provider totals', (
     reasoning: 2,
     total: 18
   })
+})
+
+test('request events roll up into comparable sessions without losing detail', () => {
+  const start = Date.parse('2026-08-15T12:00:00Z')
+  const sessions = buildSessions([
+    {
+      key: 'request-1', source: 'C:/sessions/alpha/session-a.jsonl', ts: start,
+      model: 'claude-sonnet-5', input: 10, cachedInput: 20, cacheWrite: 5,
+      output: 7, reasoning: 0, total: 42, usd: 0.01, durationMs: 2_000
+    },
+    {
+      key: 'request-2', source: 'C:/sessions/alpha/session-a.jsonl', ts: start + 4_000,
+      model: 'claude-opus-4-8', input: 11, cachedInput: 0, cacheWrite: 0,
+      output: 9, reasoning: 0, total: 20, usd: 0.03, durationMs: 1_000
+    }
+  ], { from: start - 1, to: start + 10_000 }, {
+    provider: 'claude', product: 'Claude Code', sourceType: 'local'
+  })
+
+  assert.equal(sessions.length, 1)
+  assert.equal(sessions[0].requestCount, 2)
+  assert.equal(sessions[0].tokens.total, 62)
+  assert.equal(sessions[0].tokens.cachedInput, 20)
+  assert.equal(sessions[0].durationMs, 5_000)
+  assert.deepEqual(sessions[0].models, ['claude-sonnet-5', 'claude-opus-4-8'])
+  assert.equal(sessions[0].requests[1].id, 'request-2')
+})
+
+test('desktop and Hub snapshots merge matching sessions without double counting requests', () => {
+  const start = Date.parse('2026-08-15T12:00:00Z')
+  const base = {
+    id: 'codex', name: 'Codex', color: '#10a37f', available: true, error: null,
+    windows: [], tokens: { input: 10, cachedInput: 0, cacheWrite: 0, output: 5, reasoning: 0, total: 15 },
+    cost: { today: 0.01, total: 0.01, currency: 'USD', estimated: true },
+    series: { tokensByDay: [], costByDay: [] },
+    coverage: { sourceType: 'local', freshness: 'seconds', detail: 'request', lastSyncedAt: start },
+    meta: { sessions: 1, model: 'gpt-5-codex', lastActivity: start }
+  }
+  const request = {
+    id: 'request-1', timestamp: start, durationMs: 100, model: 'gpt-5-codex',
+    input: 10, cachedInput: 0, cacheWrite: 0, output: 5, reasoning: 0, total: 15,
+    costUsd: 0.01, costKind: 'estimated', status: 'ok'
+  }
+  const session = {
+    id: 'session-1', provider: 'codex', product: 'Codex', sourceType: 'local',
+    title: 'One session', startedAt: start, endedAt: start + 100, durationMs: 100,
+    requestCount: 1, models: ['gpt-5-codex'], primaryModel: 'gpt-5-codex',
+    tokens: base.tokens, costUsd: 0.01, costKind: 'estimated', requests: [request]
+  }
+  const remoteRequest = { ...request, id: 'request-2', timestamp: start + 1_000, output: 10, total: 20, costUsd: 0.02 }
+  const merged = mergeSnapshots(
+    [{ ...base, sessions: [session] }],
+    [{ ...base, sessions: [{ ...session, sourceType: 'otel', requests: [request, remoteRequest] }] }],
+    { from: start - 1, to: start + 5_000, granularity: 'hour' }
+  )
+
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].sessions.length, 1)
+  assert.equal(merged[0].sessions[0].requestCount, 2)
+  assert.equal(merged[0].tokens.total, 35)
+  assert.equal(merged[0].cost.total, 0.03)
 })
 

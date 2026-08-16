@@ -13,6 +13,23 @@ export function fmtUsd(n) {
   return '$' + n.toFixed(3)
 }
 
+export function fmtDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '<1s'
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m`
+}
+
+export function fmtDateTime(ms) {
+  if (!ms) return '—'
+  return new Date(ms).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit'
+  })
+}
+
 export function fmtReset(ms) {
   if (!ms) return '—'
   const diff = ms - Date.now()
@@ -47,23 +64,6 @@ export function rangeLabel(spec, resolved) {
     return `${fmt(f)} – ${fmt(t)}${sameYear ? '' : ' ' + t.getFullYear()}`
   }
   return '30D'
-}
-
-export function fmtDuration(ms) {
-  if (ms == null) return '—'
-  const s = Math.round(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ${m % 60}m`
-  return `${Math.floor(h / 24)}d ${h % 24}h`
-}
-
-export function fmtTime(ms) {
-  if (!ms) return '—'
-  const d = new Date(ms)
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 export function usageColor(pct) {

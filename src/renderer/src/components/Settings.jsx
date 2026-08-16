@@ -16,13 +16,27 @@ export default function Settings({ settings, onChange }) {
           <div className="setrow">
             <label>Refresh interval (seconds)</label>
             <input
-              type="number" min="10" max="3600" value={settings.pollSeconds}
-              onChange={(e) => onChange({ pollSeconds: Math.max(10, Number(e.target.value) || 30) })}
+              type="number" min="5" max="3600" value={settings.pollSeconds}
+              onChange={(e) => onChange({ pollSeconds: Math.max(5, Number(e.target.value) || 5) })}
             />
           </div>
           <div className="setrow">
             <label>Launch at login</label>
             <Switch on={settings.launchAtLogin} onClick={() => onChange({ launchAtLogin: !settings.launchAtLogin })} />
+          </div>
+          <div className="setrow setrow-stack">
+            <label>FrankToken Hub URL <small>Merge telemetry from every configured device</small></label>
+            <input
+              type="url" placeholder="https://tokens.example.com" value={settings.hubUrl || ''}
+              onChange={(e) => onChange({ hubUrl: e.target.value.trim() })}
+            />
+          </div>
+          <div className="setrow setrow-stack">
+            <label>Hub read token <small>Used only to read your private dashboard feed</small></label>
+            <input
+              type="password" placeholder="Optional when the Hub is private by network" value={settings.hubReadToken || ''}
+              onChange={(e) => onChange({ hubReadToken: e.target.value })}
+            />
           </div>
         </div>
       </div>
@@ -30,12 +44,13 @@ export default function Settings({ settings, onChange }) {
       <div className="card">
         <h3>About</h3>
         <div className="sub" style={{ lineHeight: 1.6 }}>
-          FrankToken is an OS-agnostic, GUI-rich usage monitor for AI coding assistants for
-          Windows / macOS / Linux. It parses local CLI session files on-device
-          (<b>~/.codex</b>, <b>~/.claude</b>); nothing is sent anywhere.
+          FrankToken is a fidelity-aware AI telemetry dashboard for Windows, macOS, Linux,
+          and a deployable FrankToken Hub. This desktop build reads local CLI sessions
+          (<b>~/.codex</b>, <b>~/.claude</b>) and will merge them with explicitly configured
+          cloud and OpenTelemetry sources.
           <br /><br />
-          Costs and Claude windows are <b>estimates</b> derived from local token counts and a
-          pricing table — treat them as guidance, not billing.
+          Every source is labeled by freshness and detail. Costs marked <b>estimated</b> use
+          token pricing; provider billing feeds remain the reconciliation source of truth.
         </div>
       </div>
     </div>

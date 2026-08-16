@@ -34,6 +34,7 @@ export async function fetchAll(range) {
           cost: { today: 0, total: 0, currency: 'USD', estimated: true },
           series: { tokensByDay: [], costByDay: [] },
           sessions: [],
+          coverage: { sourceType: 'unknown', freshness: 'unknown', detail: 'aggregate', lastSyncedAt: null },
           meta: { lastActivity: null, sessions: 0, model: null }
         }
       }

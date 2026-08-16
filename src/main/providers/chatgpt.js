@@ -11,7 +11,8 @@
 // token counts (chars/4 — exports carry text, not token counts).
 import fs from 'node:fs'
 import path from 'node:path'
-import { HOME, exists, estimateCost, summarize, normalizeRange, buildSessionSummary, selectSessions } from './util.js'
+import { HOME, exists, estimateCost, summarize, normalizeRange } from './util.js'
+import { buildSessions, sessionCoverage } from './sessions.js'
 
 export const IMPORT_ROOT = path.join(HOME, '.franktoken', 'imports')
 const SOURCES = [
@@ -49,7 +50,7 @@ export function chatgptConversationEvents(convo) {
     if (!ts) continue
     const model = msg.metadata?.model_slug || msg.metadata?.default_model_slug || null
     const isAssistant = msg.author.role === 'assistant'
-    const event = {
+    events.push({
       ts,
       input: isAssistant ? 0 : tokens,
       cachedInput: 0,
@@ -58,14 +59,26 @@ export function chatgptConversationEvents(convo) {
       reasoning: 0,
       total: tokens,
       model
-    }
-    event.usd = estimateCost(
-      { input: event.input, output: event.output, cacheWrite: 0, cacheRead: 0 },
-      model || 'gpt-5'
-    )
-    events.push(event)
+    })
   }
-  return events.sort((a, b) => a.ts - b.ts)
+  events.sort((a, b) => a.ts - b.ts)
+  // Exports usually carry model_slug only on assistant messages. Attribute
+  // each prompt (user/system/tool) to the model that answered it — the next
+  // assistant message's model — falling back to the previous known model, so
+  // prompt tokens land in the right per-model bucket instead of "unknown".
+  let prevModel = null
+  for (let i = 0; i < events.length; i++) {
+    if (!events[i].model) {
+      let next = null
+      for (let j = i + 1; j < events.length && !next; j++) next = events[j].model
+      events[i].model = next || prevModel
+    }
+    prevModel = events[i].model || prevModel
+  }
+  for (const e of events) {
+    e.usd = estimateCost({ input: e.input, output: e.output, cacheWrite: 0, cacheRead: 0 }, e.model || 'gpt-5')
+  }
+  return events
 }
 
 function readConversations(dir) {
@@ -121,17 +134,16 @@ export default {
       cost: { today: 0, total: 0, currency: 'USD', estimated: true },
       series: { tokensByDay: [], costByDay: [] },
       sessions: [],
+      coverage: sessionCoverage('import', 'manual', 'request'),
       meta: {
         lastActivity: null,
         sessions: 0,
         model: null,
-        coverage: 'Import-based · OpenAI exposes no usage API for ChatGPT',
         importDirs: SOURCES.map((s) => s.dir)
       }
     }
 
     const events = []
-    const sessions = []
     const modelTokens = new Map()
     let convoCount = 0
 
@@ -141,19 +153,13 @@ export default {
         const convoEvents = chatgptConversationEvents(convo)
         if (convoEvents.length === 0) continue
         convoCount++
-        events.push(...convoEvents)
-        const summary = buildSessionSummary(convoEvents, {
-          id: convo.conversation_id || convo.id || `${surface}:${convo.title}`,
-          title: convo.title || 'Untitled conversation',
-          surface,
-          estimated: true
-        })
-        if (summary) {
-          summary.provider = this.id
-          summary.providerName = this.name
-          summary.color = this.color
-          sessions.push(summary)
+        const sessionId = convo.conversation_id || convo.id || `${surface}:${convo.title}`
+        for (const e of convoEvents) {
+          e.sessionId = sessionId
+          e.title = convo.title || 'Untitled conversation'
+          e.product = surface
         }
+        events.push(...convoEvents)
       }
     }
 
@@ -172,9 +178,16 @@ export default {
     base.meta.models = models
     base.meta.model = models[0] || null
     base.meta.lastActivity = events.reduce((m, e) => Math.max(m, e.ts), 0) || null
-    base.sessions = selectSessions(sessions, r)
+    base.sessions = buildSessions(events, r, {
+      provider: 'chatgpt',
+      product: 'ChatGPT',
+      sourceType: 'import',
+      sourceLabel: 'ChatGPT data export',
+      freshness: 'manual',
+      costKind: 'estimated'
+    })
     base.meta.sessions = base.sessions.length
-    base.meta.totalSessions = sessions.length
+    base.meta.totalSessions = convoCount
     base.tokensEstimated = true
 
     const sum = summarize(events, r, { costEstimated: true })
