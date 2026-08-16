@@ -74,7 +74,39 @@ Codex/Claude local transcripts ─ desktop ──────┘
 
 The Hub stores only telemetry metadata in append-only JSONL. It does not need prompt text, generated text, document contents, or source code.
 
-## Run the desktop app
+## Install
+
+Download the installer for your platform from the [latest release](https://github.com/omzigfrank/franktoken/releases/latest):
+
+| Platform | File | Install |
+|---|---|---|
+| Windows | `FrankToken-<version>-win-x64.exe` | Run it. Installs per-user (no admin prompt) and adds Start Menu + desktop shortcuts. |
+| macOS (Apple Silicon) | `FrankToken-<version>-mac-arm64.dmg` | Open, drag to Applications. |
+| macOS (Intel) | `FrankToken-<version>-mac-x64.dmg` | Open, drag to Applications. |
+| Linux | `FrankToken-<version>-linux-x86_64.AppImage` | `chmod +x` it, then run. |
+
+FrankToken lives in your **system tray / menu bar** — after launching, click the tray icon to open the dashboard. It is not a taskbar app.
+
+**The builds are unsigned** (no code-signing certificates configured), so each OS will warn you the first time:
+
+- **Windows** — SmartScreen shows "Windows protected your PC". Click **More info → Run anyway**.
+- **macOS** — Gatekeeper reports the app is damaged or from an unidentified developer. Clear the quarantine flag once:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/FrankToken.app
+  ```
+- **Linux** — mark the AppImage executable:
+  ```bash
+  chmod +x FrankToken-*.AppImage && ./FrankToken-*.AppImage
+  ```
+
+To cut a new release, push a version tag — CI builds all three platforms and attaches them to a GitHub Release:
+
+```bash
+npm version patch      # or: minor / major — commits and tags
+git push origin main --follow-tags
+```
+
+## Run from source
 
 ```bash
 npm install
@@ -83,7 +115,7 @@ npm run dev
 
 The desktop app reads `~/.codex/sessions/**/*.jsonl` and `~/.claude/projects/**/*.jsonl`. In **Settings**, add a FrankToken Hub URL and its read token to merge local history with every device reporting to that Hub.
 
-Build an installer with `npm run dist:win`, `npm run dist:mac`, or `npm run dist:linux`.
+Build an installer locally with `npm run dist:win`, `npm run dist:mac`, or `npm run dist:linux` — output lands in `dist/`. Each platform must be built on its own OS.
 
 ## Deploy the Hub
 
