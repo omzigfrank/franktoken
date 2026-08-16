@@ -1,0 +1,10 @@
+node_modules
+out
+dist
+data
+.git
+.github
+work
+outputs
+*.log
+.env

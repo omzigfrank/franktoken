@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import Store from 'electron-store'
 import { fetchAll } from './providers/registry.js'
+import { fetchHub, mergeSnapshots } from './providers/hub.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -12,10 +13,12 @@ const resourcesDir = path.join(__dirname, '../../resources')
 
 const store = new Store({
   defaults: {
-    pollSeconds: 30,
+    pollSeconds: 5,
     launchAtLogin: true,
     theme: 'dark',
-    bounds: { width: 960, height: 700 },
+    bounds: { width: 1280, height: 820 },
+    hubUrl: '',
+    hubReadToken: '',
     // analytics range: preset id + custom bounds (epoch ms)
     range: { preset: '30d', from: null, to: null, granularity: 'auto' }
   }
@@ -66,8 +69,8 @@ function createWindow() {
   win = new BrowserWindow({
     width: b.width,
     height: b.height,
-    minWidth: 720,
-    minHeight: 520,
+    minWidth: 840,
+    minHeight: 620,
     show: false,
     frame: false,
     transparent: false,
@@ -195,7 +198,16 @@ function updateTray(snaps) {
 
 async function poll() {
   try {
-    lastSnapshots = await fetchAll(resolveRange())
+    const range = resolveRange()
+    const hub = { hubUrl: store.get('hubUrl'), hubReadToken: store.get('hubReadToken') }
+    const [local, remote] = await Promise.all([
+      fetchAll(range),
+      fetchHub(hub, range).catch((error) => {
+        console.error('hub poll failed', error)
+        return []
+      })
+    ])
+    lastSnapshots = mergeSnapshots(local, remote, range)
     updateTray(lastSnapshots)
     if (win && !win.isDestroyed()) {
       win.webContents.send('snapshot:update', {
@@ -212,7 +224,7 @@ async function poll() {
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer)
-  const sec = Math.max(10, Number(store.get('pollSeconds')) || 30)
+  const sec = Math.max(5, Number(store.get('pollSeconds')) || 5)
   pollTimer = setInterval(poll, sec * 1000)
 }
 

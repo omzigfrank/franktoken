@@ -13,6 +13,23 @@ export function fmtUsd(n) {
   return '$' + n.toFixed(3)
 }
 
+export function fmtDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '<1s'
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m`
+}
+
+export function fmtDateTime(ms) {
+  if (!ms) return '—'
+  return new Date(ms).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit'
+  })
+}
+
 export function fmtReset(ms) {
   if (!ms) return '—'
   const diff = ms - Date.now()

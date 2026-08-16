@@ -4,6 +4,8 @@ import assert from 'node:assert/strict'
 import { claudeUsageEvent, dedupeClaudeUsageEvents, selectClaudeHistoryFiles } from '../src/main/providers/claude.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
 import { summarize } from '../src/main/providers/util.js'
+import { buildSessions } from '../src/main/providers/sessions.js'
+import { mergeSnapshots } from '../src/main/providers/hub.js'
 
 test('Claude usage keeps one complete snapshot per message id', () => {
   const partial = claudeUsageEvent({
@@ -91,5 +93,66 @@ test('summary preserves cache-write tokens without inflating provider totals', (
     reasoning: 2,
     total: 18
   })
+})
+
+test('request events roll up into comparable sessions without losing detail', () => {
+  const start = Date.parse('2026-08-15T12:00:00Z')
+  const sessions = buildSessions([
+    {
+      key: 'request-1', source: 'C:/sessions/alpha/session-a.jsonl', ts: start,
+      model: 'claude-sonnet-5', input: 10, cachedInput: 20, cacheWrite: 5,
+      output: 7, reasoning: 0, total: 42, usd: 0.01, durationMs: 2_000
+    },
+    {
+      key: 'request-2', source: 'C:/sessions/alpha/session-a.jsonl', ts: start + 4_000,
+      model: 'claude-opus-4-8', input: 11, cachedInput: 0, cacheWrite: 0,
+      output: 9, reasoning: 0, total: 20, usd: 0.03, durationMs: 1_000
+    }
+  ], { from: start - 1, to: start + 10_000 }, {
+    provider: 'claude', product: 'Claude Code', sourceType: 'local'
+  })
+
+  assert.equal(sessions.length, 1)
+  assert.equal(sessions[0].requestCount, 2)
+  assert.equal(sessions[0].tokens.total, 62)
+  assert.equal(sessions[0].tokens.cachedInput, 20)
+  assert.equal(sessions[0].durationMs, 5_000)
+  assert.deepEqual(sessions[0].models, ['claude-sonnet-5', 'claude-opus-4-8'])
+  assert.equal(sessions[0].requests[1].id, 'request-2')
+})
+
+test('desktop and Hub snapshots merge matching sessions without double counting requests', () => {
+  const start = Date.parse('2026-08-15T12:00:00Z')
+  const base = {
+    id: 'codex', name: 'Codex', color: '#10a37f', available: true, error: null,
+    windows: [], tokens: { input: 10, cachedInput: 0, cacheWrite: 0, output: 5, reasoning: 0, total: 15 },
+    cost: { today: 0.01, total: 0.01, currency: 'USD', estimated: true },
+    series: { tokensByDay: [], costByDay: [] },
+    coverage: { sourceType: 'local', freshness: 'seconds', detail: 'request', lastSyncedAt: start },
+    meta: { sessions: 1, model: 'gpt-5-codex', lastActivity: start }
+  }
+  const request = {
+    id: 'request-1', timestamp: start, durationMs: 100, model: 'gpt-5-codex',
+    input: 10, cachedInput: 0, cacheWrite: 0, output: 5, reasoning: 0, total: 15,
+    costUsd: 0.01, costKind: 'estimated', status: 'ok'
+  }
+  const session = {
+    id: 'session-1', provider: 'codex', product: 'Codex', sourceType: 'local',
+    title: 'One session', startedAt: start, endedAt: start + 100, durationMs: 100,
+    requestCount: 1, models: ['gpt-5-codex'], primaryModel: 'gpt-5-codex',
+    tokens: base.tokens, costUsd: 0.01, costKind: 'estimated', requests: [request]
+  }
+  const remoteRequest = { ...request, id: 'request-2', timestamp: start + 1_000, output: 10, total: 20, costUsd: 0.02 }
+  const merged = mergeSnapshots(
+    [{ ...base, sessions: [session] }],
+    [{ ...base, sessions: [{ ...session, sourceType: 'otel', requests: [request, remoteRequest] }] }],
+    { from: start - 1, to: start + 5_000, granularity: 'hour' }
+  )
+
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].sessions.length, 1)
+  assert.equal(merged[0].sessions[0].requestCount, 2)
+  assert.equal(merged[0].tokens.total, 35)
+  assert.equal(merged[0].cost.total, 0.03)
 })
 

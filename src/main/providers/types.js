@@ -21,6 +21,8 @@
 //       tokensByDay: [{ date, total }],
 //       costByDay:   [{ date, cost }]
 //     },
+//     sessions: Session[],             // request-granular, when the source supports it
+//     coverage: { sourceType, freshness, detail, lastSyncedAt },
 //     meta: { lastActivity: ms|null, sessions: number, model: string|null }
 //   }
 //

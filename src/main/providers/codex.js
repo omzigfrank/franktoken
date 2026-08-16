@@ -5,6 +5,7 @@
 //    snapshots into time-stamped incremental events for range analysis.
 import path from 'node:path'
 import { HOME, exists, listJsonl, readJsonlLines, estimateCost, summarize, normalizeRange } from './util.js'
+import { buildSessions, sessionCoverage } from './sessions.js'
 
 const ROOT = path.join(HOME, '.codex')
 const SESSIONS = path.join(ROOT, 'sessions')
@@ -84,6 +85,8 @@ export default {
       tokens: emptyTokens(),
       cost: { today: 0, total: 0, currency: 'USD', estimated: true },
       series: { tokensByDay: [], costByDay: [] },
+      sessions: [],
+      coverage: sessionCoverage('local', 'seconds'),
       meta: { lastActivity: null, sessions: 0, model: null }
     }
 
@@ -149,7 +152,7 @@ export default {
           { input: d.input, output: d.output, cacheWrite: d.cacheWrite, cacheRead: d.cachedInput },
           eventModel || 'gpt-5-codex'
         )
-        events.push({ ts: s.ts, ...d, usd, model: eventModel })
+        events.push({ ts: s.ts, ...d, usd, model: eventModel, source: f.path })
       }
     }
 
@@ -173,6 +176,14 @@ export default {
     base.cost = sum.cost
     base.series = sum.series
     base.range = sum.range
+    base.sessions = buildSessions(events, r, {
+      provider: 'codex',
+      product: 'Codex',
+      sourceType: 'local',
+      sourceLabel: 'Codex transcript',
+      freshness: 'seconds',
+      costKind: 'estimated'
+    })
 
     // Per-model breakdown so the UI can filter by clicking a model badge.
     // Models with zero tokens inside the range are dropped.

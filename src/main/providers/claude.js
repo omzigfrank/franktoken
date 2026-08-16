@@ -8,6 +8,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { HOME, exists, listJsonl, readJsonlLines, estimateCost, summarize, normalizeRange } from './util.js'
+import { buildSessions, sessionCoverage } from './sessions.js'
 
 const ROOT = path.join(HOME, '.claude')
 const PROJECTS = path.join(ROOT, 'projects')
@@ -315,6 +316,8 @@ export default {
       tokens: emptyTokens(),
       cost: { today: 0, total: 0, currency: 'USD', estimated: true },
       series: { tokensByDay: [], costByDay: [] },
+      sessions: [],
+      coverage: sessionCoverage('local', 'seconds'),
       meta: { lastActivity: null, sessions: 0, model: null }
     }
 
@@ -441,6 +444,14 @@ export default {
     base.cost = sum.cost
     base.series = sum.series
     base.range = sum.range
+    base.sessions = buildSessions(events, r, {
+      provider: 'claude',
+      product: 'Claude Code',
+      sourceType: 'local',
+      sourceLabel: 'Claude Code transcript',
+      freshness: 'seconds',
+      costKind: 'estimated'
+    })
 
     // Per-model breakdown so the UI can filter by clicking a model badge.
     // Models with zero tokens inside the range are dropped (recently-touched
