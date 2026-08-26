@@ -12,7 +12,9 @@
 //      AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET.
 //   2. A traditional certificate file. Set CSC_LINK (path or base64 .pfx) and
 //      CSC_KEY_PASSWORD — electron-builder reads those directly, so this file
-//      needs no branch for it.
+//      needs no branch for it. NOTE: CSC_LINK must be absent, not empty. The
+//      macOS target resolves an empty value against the working directory and
+//      fails with "<repo root> not a file", so CI only exports it when set.
 //
 // With neither configured the build stays unsigned and still succeeds, so
 // local builds and forks are unaffected.

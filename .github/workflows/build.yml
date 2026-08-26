@@ -80,23 +80,38 @@ jobs:
       - name: Test
         run: npm test
       - name: Build
-        run: ${{ matrix.cmd }} -- --publish never
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Export CSC_LINK only when a certificate is actually configured. An
+          # EMPTY CSC_LINK is worse than an absent one: the macOS target
+          # resolves it against the working directory and dies with
+          # "<repo root> not a file". Setting it to '' here broke the first
+          # v0.4.2 release build (mac leg only; Windows and Linux tolerated it).
+          if [ -n "${WINDOWS_CERT_BASE64:-}" ]; then
+            export CSC_LINK="$WINDOWS_CERT_BASE64"
+            export CSC_KEY_PASSWORD="${WINDOWS_CERT_PASSWORD:-}"
+          fi
+          ${{ matrix.cmd }} -- --publish never
         env:
           # macOS signing stays off: no Apple Developer certificate configured.
           CSC_IDENTITY_AUTO_DISCOVERY: false
           # Windows signing is opt-in. With none of these set the build still
           # succeeds and produces unsigned artifacts, so forks keep working.
-          # Route 1 — Azure Trusted Signing (publicly trusted, ~$10/mo):
+          # Route 1 — Azure Trusted Signing (publicly trusted, ~$10/mo). Safe to
+          # pass through possibly-empty: electron-builder.config.cjs requires all
+          # three to be non-empty before it emits azureSignOptions at all.
           AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ matrix.os == 'windows-latest' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT || '' }}
           AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ matrix.os == 'windows-latest' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT || '' }}
           AZURE_TRUSTED_SIGNING_PROFILE: ${{ matrix.os == 'windows-latest' && secrets.AZURE_TRUSTED_SIGNING_PROFILE || '' }}
           AZURE_TENANT_ID: ${{ matrix.os == 'windows-latest' && secrets.AZURE_TENANT_ID || '' }}
           AZURE_CLIENT_ID: ${{ matrix.os == 'windows-latest' && secrets.AZURE_CLIENT_ID || '' }}
           AZURE_CLIENT_SECRET: ${{ matrix.os == 'windows-latest' && secrets.AZURE_CLIENT_SECRET || '' }}
-          # Route 2 — a .pfx certificate, base64-encoded into the secret.
-          # Scoped to the Windows leg so it can never be picked up on macOS.
-          CSC_LINK: ${{ matrix.os == 'windows-latest' && secrets.WINDOWS_CERT_BASE64 || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.os == 'windows-latest' && secrets.WINDOWS_CERT_PASSWORD || '' }}
+          # Route 2 — a .pfx certificate, base64-encoded into the secret. Read by
+          # the guard above rather than exported directly, and scoped to the
+          # Windows leg so a certificate can never be picked up on macOS.
+          WINDOWS_CERT_BASE64: ${{ matrix.os == 'windows-latest' && secrets.WINDOWS_CERT_BASE64 || '' }}
+          WINDOWS_CERT_PASSWORD: ${{ matrix.os == 'windows-latest' && secrets.WINDOWS_CERT_PASSWORD || '' }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
