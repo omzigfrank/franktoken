@@ -22,9 +22,13 @@ export default function WindowBar({ w }) {
         )}
       </div>
       <div className="reset">
-        {unknown ? 'awaiting live data' : `resets in ${fmtReset(w.resetsAt)}`}
-        {w.usedTokens != null ? ` · ${fmtTokens(w.usedTokens)} / ${fmtTokens(w.budgetTokens)} tok` : ''}
-        {w.estimated ? ' · est.' : ''}
+        {unknown ? 'no live limit available' : `resets in ${fmtReset(w.resetsAt)}`}
+        {w.usedTokens != null
+          ? w.budgetTokens != null
+            ? ` · ${fmtTokens(w.usedTokens)} / ${fmtTokens(w.budgetTokens)} tok`
+            : ` · ${fmtTokens(w.usedTokens)} tok on this device`
+          : ''}
+        {w.estimated && w.budgetTokens != null ? ' · est.' : ''}
       </div>
     </div>
   )

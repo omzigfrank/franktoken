@@ -6,7 +6,9 @@ import {
   dedupeClaudeUsageEvents,
   selectClaudeHistoryFiles,
   limitsWindows,
-  surfaceLabel
+  surfaceLabel,
+  estimatedWindow,
+  credentialHint
 } from '../src/main/providers/claude.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
 import { estimateTextTokens, chatgptConversationEvents } from '../src/main/providers/chatgpt.js'
@@ -113,6 +115,39 @@ test('limits[] parsing tolerates every observed usage-API shape', () => {
   assert.equal(ratio[0].usedPercent, 25)
 
   assert.deepEqual(limitsWindows(null), [])
+})
+
+test('fallback windows report observed tokens and never invent a percentage', () => {
+  const now = Date.parse('2026-08-16T12:00:00Z')
+  const events = [
+    { ts: now - 60 * 60_000, total: 5_000_000 }, // 1h ago — inside both windows
+    { ts: now - 20 * 3_600_000, total: 3_000_000 }, // 20h ago — weekly only
+    { ts: now - 40 * 86_400_000, total: 900_000_000 } // 40d ago — outside both
+  ]
+
+  const fiveHour = estimatedWindow('five_hour', '5-Hour Window', 300, events, now)
+  assert.equal(fiveHour.usedTokens, 5_000_000)
+  assert.equal(fiveHour.usedPercent, null)
+  assert.equal(fiveHour.unknown, true)
+  assert.equal(fiveHour.budgetTokens, null)
+
+  const weekly = estimatedWindow('seven_day', 'Weekly Window', 10080, events, now)
+  assert.equal(weekly.usedTokens, 8_000_000)
+  // A huge local history must never render as "100% of quota used".
+  assert.equal(weekly.usedPercent, null)
+})
+
+test('credential hint names the paths checked and distinguishes real problems', () => {
+  const missing = credentialHint({ checked: ['C:\\Users\\x\\.claude\\.credentials.json'], problems: [] }, 'win32')
+  assert.match(missing, /Looked in C:\\Users\\x\\\.claude\\\.credentials\.json/)
+  assert.doesNotMatch(missing, /Keychain/) // never mention Keychain off macOS
+  assert.match(missing, /sign in once/)
+
+  const onMac = credentialHint({ checked: ['/home/f/.claude/.credentials.json'], problems: [] }, 'darwin')
+  assert.match(onMac, /login Keychain/)
+
+  const broken = credentialHint({ checked: ['/x/.credentials.json'], problems: ['/x/.credentials.json — EACCES'] }, 'linux')
+  assert.match(broken, /could not use: \/x\/\.credentials\.json — EACCES/)
 })
 
 test('surface labels map transcript entrypoints to human names', () => {
