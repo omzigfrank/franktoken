@@ -556,6 +556,71 @@ export function selectClaudeHistoryFiles(allFiles, days, now = Date.now()) {
   return allFiles.filter((file) => file.mtimeMs >= cutoff)
 }
 
+/**
+ * Explain an empty range honestly. The hard part is not the wording: the
+ * provider only reads transcripts recent enough to matter for the requested
+ * range, so "no usage rows" can mean either "nothing here records a model
+ * call" or "the files that do were not opened". Saying the former when the
+ * latter is true sends the user to a wider range that will not help, or stops
+ * them trying one that would.
+ *
+ * Returns null when the range has data and needs no explanation.
+ */
+export function emptyRangeMessage({
+  totalFiles = 0,
+  scannedFiles = 0,
+  usageRows = 0,
+  sessionsInRange = 0,
+  newestEventAt = null,
+  undatedRows = 0,
+  from = 0,
+  now = Date.now()
+} = {}) {
+  if (totalFiles === 0) {
+    return (
+      'No local Claude sessions found. Account-wide limits still shown live; session detail ' +
+      'appears once a Claude surface runs on this machine.'
+    )
+  }
+  if (sessionsInRange > 0) return null
+
+  const fileLabel = `${totalFiles} local transcript${totalFiles === 1 ? '' : 's'}`
+  const elsewhere =
+    'Work done in Claude Code on the web, on another machine, or in Claude.ai / Cowork leaves no ' +
+    'transcript here; that usage still counts against the account-wide windows above.'
+  let message
+
+  if (usageRows === 0 && scannedFiles >= totalFiles) {
+    // Everything was scanned, so this claim is actually supported: signing in
+    // writes a transcript without ever calling the model. A wider range cannot
+    // help, so do not suggest one.
+    message =
+      `${fileLabel} found, and none records a model call yet — signing in writes a transcript ` +
+      `without using the model. Ask Claude Code something on this machine and it appears here ` +
+      `within seconds. ${elsewhere}`
+  } else if (usageRows === 0) {
+    const skipped = totalFiles - scannedFiles
+    message =
+      `No Claude model calls in the ${scannedFiles} transcript${scannedFiles === 1 ? '' : 's'} ` +
+      `active in this range. ${skipped} older transcript${skipped === 1 ? '' : 's'} not scanned ` +
+      `for it — try 7D or 30D. ${elsewhere}`
+  } else {
+    const hours = newestEventAt ? Math.round((now - newestEventAt) / 3_600_000) : null
+    const age = hours == null ? 'not datable' : hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`
+    const wider = newestEventAt && newestEventAt < from ? ' — try 7D or 30D' : ''
+    message =
+      `No Claude model calls on this device in this range. Newest recorded call: ${age}` +
+      `${wider}. ${fileLabel} scanned. ${elsewhere}`
+  }
+
+  if (undatedRows > 0) {
+    message +=
+      ` (${undatedRows} usage row${undatedRows === 1 ? '' : 's'} had no readable timestamp and ` +
+      `were dated from the file instead.)`
+  }
+  return message
+}
+
 export default {
   id: 'claude',
   name: 'Claude',
@@ -613,6 +678,7 @@ export default {
     let events = [] // one complete event per unique model response
     const modelTokens = new Map() // model -> total tokens (for badge ordering)
     const fileMeta = new Map() // path -> {sessionId, cwd, branch, entrypoint}
+    let undatedRows = 0 // usage rows whose own timestamp was missing/unparseable
 
     if (files.length > 0) {
       for (const f of files) {
@@ -625,7 +691,13 @@ export default {
           if (obj.gitBranch && !meta.branch) meta.branch = obj.gitBranch
           if (obj.entrypoint) meta.entrypoint = obj.entrypoint
           const event = claudeUsageEvent(obj, f.mtimeMs)
-          if (event) candidates.push({ ...event, source: f.path })
+          if (event) {
+            // A row with no parseable timestamp falls back to the file mtime,
+            // which distorts which range it lands in. Count them so the UI can
+            // say so instead of silently mis-bucketing.
+            if (!(obj.timestamp && Number.isFinite(Date.parse(obj.timestamp)))) undatedRows += 1
+            candidates.push({ ...event, source: f.path })
+          }
         })
       }
 
@@ -677,19 +749,22 @@ export default {
       })
     }
 
-    if (allFiles.length === 0) {
-      base.error =
-        'No local Claude sessions found. Account-wide limits still shown live; session detail appears once a Claude surface runs on this machine.'
-    } else if (base.meta.sessions === 0) {
-      const last = base.meta.lastActivity
-      const quiet = last ? Math.round((Date.now() - last) / 3_600_000) : null
-      base.error =
-        `No Claude usage on this device in this range — its newest transcript is ` +
-        `${quiet != null ? (quiet < 48 ? `${quiet}h old` : `${Math.round(quiet / 24)}d old`) : 'older than the range'}. ` +
-        `${allFiles.length} session${allFiles.length === 1 ? '' : 's'} stored outside it — try 7D or 30D. ` +
-        `Work done in Claude Code on the web, on another machine, or in Claude.ai / Cowork leaves no transcript here; ` +
-        `that usage still counts against the account-wide rate-limit windows.`
-    }
+    // Diagnostics the UI can state plainly rather than leaving the user to
+    // reconcile a fresh file mtime against an empty token total.
+    base.meta.usageRows = candidates.length
+    base.meta.undatedRows = undatedRows
+    base.meta.newestEventAt = events.reduce((m, e) => Math.max(m, e.ts || 0), 0) || null
+
+    base.error =
+      emptyRangeMessage({
+        totalFiles: allFiles.length,
+        scannedFiles: files.length,
+        usageRows: candidates.length,
+        sessionsInRange: base.meta.sessions,
+        newestEventAt: base.meta.newestEventAt,
+        undatedRows,
+        from: r.from
+      }) || base.error
 
     const now = Date.now()
 

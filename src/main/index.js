@@ -7,6 +7,7 @@ import Store from 'electron-store'
 import { fetchAll } from './providers/registry.js'
 import { fetchHub, mergeSnapshots } from './providers/hub.js'
 import { claudeRoots, setManualToken } from './providers/claude.js'
+import { resolvePreset } from './providers/util.js'
 import { connectStatus, launchLogin, saveManualToken } from './claudeAuth.js'
 import { IMPORT_ROOT } from './providers/chatgpt.js'
 import { buildReportHtml } from './report.js'
@@ -34,19 +35,9 @@ const store = new Store({
 })
 
 // Resolve the stored range spec into concrete {from,to,granularity} epoch ms.
+// The arithmetic lives in providers/util.js so it can be unit-tested.
 function resolveRange() {
-  const r = store.get('range') || { preset: '30d' }
-  const now = Date.now()
-  const presets = { '24h': 1, '7d': 7, '30d': 30, '90d': 90 }
-  if (r.preset && r.preset !== 'custom') {
-    const span = (r.preset === '24h' ? 1 : presets[r.preset] || 30) * 86_400_000
-    return { from: now - span, to: now, granularity: r.granularity || 'auto' }
-  }
-  return {
-    from: r.from ?? now - 30 * 86_400_000,
-    to: r.to ?? now,
-    granularity: r.granularity || 'auto'
-  }
+  return resolvePreset(store.get('range'))
 }
 
 let tray = null
