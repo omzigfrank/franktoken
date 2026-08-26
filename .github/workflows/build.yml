@@ -82,8 +82,21 @@ jobs:
       - name: Build
         run: ${{ matrix.cmd }} -- --publish never
         env:
-          # Disable code-signing in CI (no certificates configured).
+          # macOS signing stays off: no Apple Developer certificate configured.
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          # Windows signing is opt-in. With none of these set the build still
+          # succeeds and produces unsigned artifacts, so forks keep working.
+          # Route 1 — Azure Trusted Signing (publicly trusted, ~$10/mo):
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ matrix.os == 'windows-latest' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT || '' }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ matrix.os == 'windows-latest' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT || '' }}
+          AZURE_TRUSTED_SIGNING_PROFILE: ${{ matrix.os == 'windows-latest' && secrets.AZURE_TRUSTED_SIGNING_PROFILE || '' }}
+          AZURE_TENANT_ID: ${{ matrix.os == 'windows-latest' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ matrix.os == 'windows-latest' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ matrix.os == 'windows-latest' && secrets.AZURE_CLIENT_SECRET || '' }}
+          # Route 2 — a .pfx certificate, base64-encoded into the secret.
+          # Scoped to the Windows leg so it can never be picked up on macOS.
+          CSC_LINK: ${{ matrix.os == 'windows-latest' && secrets.WINDOWS_CERT_BASE64 || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.os == 'windows-latest' && secrets.WINDOWS_CERT_PASSWORD || '' }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -107,6 +120,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' \) \
+            -exec sha256sum {} + | sed 's| .*/| |' | sort -k2 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -114,5 +133,7 @@ jobs:
           # package.json's version at this commit.
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || needs.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*
+            SHA256SUMS.txt
           generate_release_notes: true

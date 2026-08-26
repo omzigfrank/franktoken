@@ -90,9 +90,49 @@ Download the installer for your platform from the [latest release](https://githu
 
 FrankToken lives in your **system tray / menu bar** — after launching, click the tray icon to open the dashboard. It is not a taskbar app.
 
-**The builds are unsigned** (no code-signing certificates configured), so each OS will warn you the first time:
+### Why Windows warns, and how to make it stop
 
-- **Windows** — SmartScreen shows "Windows protected your PC". Click **More info → Run anyway**.
+The Windows build is **unsigned**, so it carries no publisher identity. Two separate warnings follow
+from that, and it is worth knowing which is which:
+
+1. **On download** — Edge shows *"Make sure you trust … isn't commonly downloaded"*. This is
+   SmartScreen's reputation check in the browser. Choose **Keep** in the download flyout.
+2. **On first run** — *"Windows protected your PC"*. This is SmartScreen acting on the
+   mark-of-the-web that the browser attached to the file. **More info → Run anyway**, or clear the
+   marker first so the prompt never appears:
+
+   ```powershell
+   Unblock-File -Path .\FrankToken-*-win32-x64.exe
+   ```
+
+Both are per-file and per-machine. **Only a code-signing certificate removes them for everyone**,
+and there are three routes with genuinely different trade-offs:
+
+| Route | Cost | Removes the warning for | Notes |
+|---|---|---|---|
+| **Azure Trusted Signing** | ~$10/month | Everyone | Cheapest publicly-trusted option. Microsoft-run, keys stay in their HSM, works in CI. Identity validation requires a legal entity (3+ years of history) or individual validation. |
+| **OV/EV certificate** | ~$200–600/year | Everyone | Since June 2023 the private key must live on FIPS 140-2 Level 2 hardware or a cloud HSM, so a bare `.pfx` in CI is no longer possible for a new certificate. EV builds reputation fastest. |
+| **Internal CA + Trusted Publishers** | Free | Only your managed endpoints | Sign with your own CA and push the certificate to Trusted Publishers via Intune or GPO. The right answer for a fleet you administer; does nothing for anyone outside it. |
+
+Signing is already wired for the first two: set the secrets and CI signs automatically, no code
+change needed. See [`electron-builder.config.cjs`](electron-builder.config.cjs) for the exact
+variable names — `AZURE_TRUSTED_SIGNING_*` plus `AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/
+`AZURE_CLIENT_SECRET` for Trusted Signing, or `CSC_LINK`/`CSC_KEY_PASSWORD` for a certificate file.
+With none of them set the build stays unsigned and still succeeds.
+
+Reputation is separate from signing: a freshly signed binary from an unknown publisher can still be
+flagged until downloads accumulate. You can shorten that by submitting the file to Microsoft at
+<https://www.microsoft.com/en-us/wdsi/filesubmission> — free, and it works on unsigned files too.
+
+Every release also publishes `SHA256SUMS.txt`, so the download can be verified against what CI
+built even while the binaries are unsigned:
+
+```powershell
+(Get-FileHash .\FrankToken-0.4.2-win32-x64.exe -Algorithm SHA256).Hash.ToLower()
+```
+
+**The macOS and Linux builds are unsigned too**, so those platforms warn as well:
+
 - **macOS** — Gatekeeper reports the app is damaged or from an unidentified developer. Clear the quarantine flag once:
   ```bash
   xattr -dr com.apple.quarantine /Applications/FrankToken.app
