@@ -34,7 +34,7 @@ export default function ConnectClaude() {
   const [busy, setBusy] = useState(null)
   const [msg, setMsg] = useState(null)
   const [token, setToken] = useState('')
-  const watch = useRef(null)
+  const wasConnected = useRef(false)
 
   const load = useCallback(async () => {
     const next = await window.api.claudeStatus()
@@ -44,22 +44,28 @@ export default function ConnectClaude() {
 
   useEffect(() => {
     load()
-    return () => clearInterval(watch.current)
   }, [load])
 
-  // After launching the login there is nothing to read until the user finishes
-  // in the browser, so poll for a couple of minutes and stop on success.
-  const watchForLogin = useCallback(() => {
-    clearInterval(watch.current)
-    const started = Date.now()
-    watch.current = setInterval(async () => {
-      const next = await load()
-      if (next?.auth?.connected || Date.now() - started > 180_000) {
-        clearInterval(watch.current)
-        if (next?.auth?.connected) setMsg({ kind: 'ok', text: 'Signed in. Live account-wide limits are active.' })
-      }
-    }, 4000)
-  }, [load])
+  const connected = !!st?.auth?.connected
+
+  // Keep re-checking while disconnected. Both things the user does next happen
+  // outside this app — installing the CLI, finishing /login in a browser — and
+  // neither notifies us. Polling means "Re-check" is a convenience, not a step
+  // they have to know about.
+  useEffect(() => {
+    if (!st || connected) return
+    const id = setInterval(load, 6000)
+    return () => clearInterval(id)
+  }, [st, connected, load])
+
+  // Announce the transition once, so a login finished in the browser produces
+  // visible confirmation here rather than a silently changed pill.
+  useEffect(() => {
+    if (connected && !wasConnected.current) {
+      setMsg({ kind: 'ok', text: 'Signed in. Live account-wide limits are active.' })
+    }
+    wasConnected.current = connected
+  }, [connected])
 
   async function signIn() {
     setBusy('login')
@@ -67,12 +73,14 @@ export default function ConnectClaude() {
     const r = await window.api.claudeLaunchLogin()
     setBusy(null)
     if (r.ok) {
-      setMsg({ kind: 'ok', text: 'A terminal is open. Type /login there, finish in the browser, and this panel will update on its own.' })
-      watchForLogin()
+      setMsg({
+        kind: 'ok',
+        text: 'A terminal is open running Claude Code. Type /login at its prompt (not the shell prompt) and finish in the browser — this panel updates on its own.'
+      })
     } else if (r.reason === 'cli-not-found') {
       setMsg({ kind: 'err', text: 'Claude Code is not installed on this machine yet — install it with the command above, then try again.' })
     } else if (r.reason === 'no-terminal') {
-      setMsg({ kind: 'err', text: `No terminal emulator found. Run ${r.cliPath} yourself and type /login.` })
+      setMsg({ kind: 'err', text: `No terminal emulator found. Run ${r.cliPath} yourself, then type /login at its prompt.` })
     } else {
       setMsg({ kind: 'err', text: `Could not open a terminal (${r.reason}).` })
     }
@@ -98,7 +106,6 @@ export default function ConnectClaude() {
 
   const auth = st?.auth
   const cli = st?.cli
-  const connected = !!auth?.connected
   const state = connected ? 'ok' : auth?.expired ? 'warn' : 'off'
 
   return (
@@ -146,6 +153,11 @@ export default function ConnectClaude() {
                       Copy
                     </button>
                   </div>
+                  <div className="cc-sub">
+                    Run it in a terminal, then come back — this panel re-checks every few seconds.
+                    A terminal opened <b>before</b> the install still has the old PATH, so run
+                    <span className="mono"> claude </span> in a new one.
+                  </div>
                 </>
               )}
             </div>
@@ -163,7 +175,11 @@ export default function ConnectClaude() {
                     {auth.expiresAt ? ` · expires ${new Date(auth.expiresAt).toLocaleString()}` : ''}
                   </>
                 ) : (
-                  'Opens a terminal running Claude Code. Type /login and finish in the browser — it is an interactive flow, so it cannot be automated away.'
+                  <>
+                    Opens a terminal running Claude Code. At <b>Claude's own prompt</b> — not the
+                    shell prompt — type <span className="mono">/login</span> and finish in the browser.
+                    It is an interactive flow, so it cannot be automated away.
+                  </>
                 )}
               </div>
               <div className="cc-actions">
