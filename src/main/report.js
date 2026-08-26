@@ -14,9 +14,13 @@
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export function buildReportHtml({ snapshots, range, generatedAt = Date.now(), title = 'FrankToken Usage Report' }) {
+export function buildReportHtml({ snapshots, range, generatedAt = Date.now(), title = 'FrankToken Usage Report', showWithoutCache = false }) {
   const data = {
     generatedAt,
+    // Mirrors the app's Settings toggle: when off the report never mentions
+    // the no-cache counterfactual, so a shared file matches what the exporter
+    // was looking at.
+    showWithoutCache: !!showWithoutCache,
     range: {
       from: range?.resolved?.from ?? null,
       to: range?.resolved?.to ?? null,
@@ -37,6 +41,7 @@ export function buildReportHtml({ snapshots, range, generatedAt = Date.now(), ti
       limitSamples: s.limitSamples || 0,
       tokens: s.tokens,
       cost: s.cost,
+      noCache: s.noCache || null,
       series: s.series,
       sessions: s.sessions || [],
       byModel: s.byModel || {},
@@ -378,6 +383,24 @@ function renderOverview() {
   row.appendChild(tile('Est. spend in range', fmtUsd(totalCost), fmtUsd(todayCost) + ' today', 'var(--good)'));
   for (const p of provs) row.appendChild(tile(p.name, fmtTok(p.tokens?.total || 0), fmtUsd(p.cost?.total || 0) + ' est.', p.color));
   view.appendChild(row);
+
+  // What the same range would have cost with no prompt cache. The token total
+  // is unchanged — the same prompt is sent either way — so this compares
+  // price, not volume. Both figures come from the same price table.
+  if (DATA.showWithoutCache) {
+    var ncCost = provs.reduce(function (a, p) { return a + ((p.noCache && p.noCache.cost && p.noCache.cost.total) || 0); }, 0);
+    var ncBase = provs.reduce(function (a, p) { return a + ((p.noCache && p.noCache.baseline && p.noCache.baseline.total) || 0); }, 0);
+    var ncIn = provs.reduce(function (a, p) { return a + ((p.noCache && p.noCache.tokens && p.noCache.tokens.input) || 0); }, 0);
+    if (ncCost > 0) {
+      var saved = ncCost - ncBase;
+      var mult = ncBase > 0 ? ncCost / ncBase : null;
+      var ncRow = el('div', 'kpirow');
+      ncRow.appendChild(tile('Spend without cache', fmtUsd(ncCost), 'same ' + fmtTok(totalTok) + ' tokens', 'var(--warn)'));
+      ncRow.appendChild(tile('Cache saved', fmtUsd(saved), mult ? mult.toFixed(1) + '\u00d7 cheaper with cache' : 'no cached tokens in range', 'var(--good)'));
+      ncRow.appendChild(tile('Uncached input if no cache', fmtTok(ncIn), 'every prompt token billed fresh'));
+      view.appendChild(ncRow);
+    }
+  }
 
   const grid = el('div', 'grid cols-2');
   const c1 = card('Tokens per day — provider head-to-head');

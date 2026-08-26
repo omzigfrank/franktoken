@@ -20,6 +20,10 @@ The v0.3 rebuild adds:
 - **A Connect Claude panel** in Settings that finds the Claude Code CLI, reports exactly which
   credential it is using (and which paths it checked when it finds none), opens the official
   login for you, and verifies a pasted token against the live API before saving it.
+- **A without-cache view**, toggled in Settings. Prompt caching does not change how many
+  tokens a conversation sends — the same prompt goes over the wire either way — so this
+  re-prices the range with every cached token billed as fresh input and shows what caching
+  is actually saving you, per provider, per model, and in the exported report.
 - **File watchers** on every local data root — the dashboard refreshes within seconds of a
   transcript changing, without waiting for a poll tick.
 - **Session surface tagging**: local Claude sessions carry the surface they ran on

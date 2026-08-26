@@ -32,6 +32,9 @@ const store = new Store({
     bounds: { width: 1280, height: 820 },
     hubUrl: '',
     hubReadToken: '',
+    // Show the "what if there were no prompt cache" counterfactual alongside
+    // the real figures. Off by default: it is a comparison, not the bill.
+    showWithoutCache: false,
     // Last-resort Claude token pasted in Settings -> Connect Claude, used only
     // when the CLI's own credentials are unreadable on this machine.
     claudeAccessToken: '',
@@ -369,7 +372,8 @@ ipcMain.handle('report:export', async () => {
     const html = buildReportHtml({
       snapshots: lastSnapshots,
       range: { spec: store.get('range'), resolved: resolveRange() },
-      generatedAt: Date.now()
+      generatedAt: Date.now(),
+      showWithoutCache: !!store.get('showWithoutCache')
     })
     fs.writeFileSync(filePath, html)
     shell.showItemInFolder(filePath)

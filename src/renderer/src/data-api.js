@@ -34,7 +34,7 @@ function browserApi() {
       range = { ...range, ...spec }
       return get()
     },
-    getSettings: async () => ({ pollSeconds: 5, launchAtLogin: false, browserReport: true }),
+    getSettings: async () => ({ pollSeconds: 5, launchAtLogin: false, browserReport: true, showWithoutCache: false }),
     setSettings: async (patch) => patch,
     onUpdate: (callback) => {
       const params = new URLSearchParams()

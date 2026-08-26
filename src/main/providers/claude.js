@@ -921,9 +921,10 @@ export default {
         (live?.reason === 'rate-limited' ? ' This resolves on its own; nothing is wrong with your account.' : '')
     }
 
-    const sum = summarize(events, r, { costEstimated: true })
+    const sum = summarize(events, r, { costEstimated: true, defaultModel: 'claude-sonnet-4' })
     base.tokens = sum.tokens
     base.cost = sum.cost
+    base.noCache = sum.noCache
     base.series = sum.series
     base.range = sum.range
     base.sessions = buildSessions(events, r, {
@@ -940,8 +941,8 @@ export default {
     // files can carry old events from models not actually used in the range).
     base.byModel = {}
     for (const mName of base.meta.models || []) {
-      const ms = summarize(events.filter((e) => e.model === mName), r, { costEstimated: true })
-      if (ms.tokens.total > 0) base.byModel[mName] = { tokens: ms.tokens, cost: ms.cost, series: ms.series }
+      const ms = summarize(events.filter((e) => e.model === mName), r, { costEstimated: true, defaultModel: 'claude-sonnet-4' })
+      if (ms.tokens.total > 0) base.byModel[mName] = { tokens: ms.tokens, cost: ms.cost, series: ms.series, noCache: ms.noCache }
     }
     base.meta.models = (base.meta.models || []).filter((m) => base.byModel[m])
     base.meta.model = base.meta.models[0] || null
