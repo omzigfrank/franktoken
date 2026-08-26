@@ -17,6 +17,9 @@ The v0.3 rebuild adds:
   credentials are read from `.credentials.json`, `CLAUDE_CONFIG_DIR`, `~/.config/claude`, or
   the **macOS Keychain**, auto-refreshed, with tolerant parsing across every observed
   `limits[]` API shape.
+- **A Connect Claude panel** in Settings that finds the Claude Code CLI, reports exactly which
+  credential it is using (and which paths it checked when it finds none), opens the official
+  login for you, and verifies a pasted token against the live API before saving it.
 - **File watchers** on every local data root — the dashboard refreshes within seconds of a
   transcript changing, without waiting for a poll tick.
 - **Session surface tagging**: local Claude sessions carry the surface they ran on
@@ -110,6 +113,31 @@ npm version patch      # or: minor / major
 Pushing a `v*` tag works too, as does **Actions → Build installers → Run workflow**
 with *"Publish a GitHub Release"* ticked. Running it with that box unticked just
 builds installers as downloadable artifacts without creating a release.
+
+## Turn on live account-wide limits
+
+Open **Settings → Connect Claude**. The panel reports what is missing and fixes it in place:
+it locates the Claude Code CLI, opens a terminal running it so you can `/login`, and then shows
+which credential it is reading and when that credential expires. If no token is found it lists
+the exact paths it checked, so "never signed in here" is distinguishable from a permission error
+or a half-written file.
+
+Two things are worth knowing about the split in coverage:
+
+- **Rate-limit windows are account-wide.** Once connected, the 5-hour and weekly gauges reflect
+  usage from every device and surface on the account — Claude.ai, Claude Code (CLI, web, desktop,
+  IDE), Cowork, Design, and the Office plugins.
+- **Per-session detail is per-machine.** Sessions, requests, and token mix come from local
+  transcripts, which only exist on machines where a Claude Code-family surface actually ran. Work
+  done in Claude Code on the web happens in a cloud container and writes nothing to your disk, so
+  it counts toward the windows but has no local session rows.
+
+FrankToken deliberately does **not** run its own OAuth flow. The usage endpoint and Claude Code's
+PKCE client id are Anthropic-internal, and minting tokens under another application's client
+identity is not something this app should do on your behalf — so the CLI stays the credential
+authority. The panel's token field exists only for machines where the CLI's credentials cannot be
+read; a pasted token is checked against the live endpoint before it is stored, and it carries no
+refresh token, so it expires on its own.
 
 ## Run from source
 

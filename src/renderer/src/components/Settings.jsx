@@ -1,4 +1,5 @@
 import React from 'react'
+import ConnectClaude from './ConnectClaude.jsx'
 
 function Switch({ on, onClick }) {
   return (
@@ -11,6 +12,7 @@ export default function Settings({ settings, onChange }) {
   return (
     <div className="grid" style={{ gap: 14 }}>
       <div className="section-title"><h2>Settings</h2></div>
+      <ConnectClaude />
       <div className="card">
         <div className="settings">
           <div className="setrow">
