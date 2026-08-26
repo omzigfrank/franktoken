@@ -826,3 +826,42 @@ test('summarizeHistory produces series, rate and projection per window', () => {
   assert.ok(out.seven_day.projection.hoursLeft > 24)
   assert.deepEqual(knownWindows(history), ['five_hour', 'seven_day'])
 })
+
+test('a reset time drifting forward by seconds is not a window rollover', () => {
+  const now = Date.parse('2026-08-26T21:40:00Z')
+  const resets = Date.parse('2026-08-26T23:28:00Z')
+  // 35 samples, steady percentage, resets_at nudged forward a second each poll
+  // by server rounding. Treating any forward movement as a rollover restarted
+  // the segment on every sample, so 35 samples reported "not enough data yet".
+  const drifting = []
+  for (let i = 34; i >= 0; i--) {
+    drifting.push({ at: now - i * 90_000, w: { five_hour: { pct: 27, resetsAt: resets + (34 - i) * 1000 } } })
+  }
+  assert.equal(currentSegment(drifting, 'five_hour', now).length, 35)
+  const flat = burnRate(drifting, 'five_hour', now)
+  assert.ok(flat, 'a steady window still reports a rate — of zero')
+  assert.equal(flat.perHour, 0)
+  assert.equal(flat.samples, 35)
+
+  // The same drift must not suppress a genuine climb.
+  const climbing = []
+  for (let i = 34; i >= 0; i--) {
+    climbing.push({
+      at: now - i * 90_000,
+      w: { five_hour: { pct: 13 + (34 - i) * 0.4, resetsAt: resets + (34 - i) * 1000 } }
+    })
+  }
+  assert.equal(Math.round(burnRate(climbing, 'five_hour', now).perHour), 16)
+
+  // A real rollover — reset time jumping a whole window — still cuts.
+  const rolled = []
+  for (let i = 20; i >= 0; i--) {
+    rolled.push({ at: now - (i + 20) * 90_000, w: { five_hour: { pct: 60 + (20 - i), resetsAt: now } } })
+  }
+  for (let i = 19; i >= 0; i--) {
+    rolled.push({ at: now - i * 90_000, w: { five_hour: { pct: 3 + (19 - i) * 0.5, resetsAt: now + 5 * 3_600_000 } } })
+  }
+  const seg = currentSegment(rolled, 'five_hour', now)
+  assert.equal(seg.length, 20)
+  assert.equal(seg[0].pct, 3, 'segment starts after the rollover, not before')
+})
