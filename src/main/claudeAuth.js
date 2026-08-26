@@ -24,19 +24,23 @@ export const INSTALL_COMMAND = 'npm install -g @anthropic-ai/claude-code'
  * Pure and platform-parameterized so it can be tested off the host OS.
  */
 export function cliCandidates(platform = process.platform, home = os.homedir(), env = process.env) {
+  // Join with the TARGET platform's rules, not the host's. Plain path.join
+  // follows whatever OS this process runs on, which made this function lie
+  // about other platforms — and broke the suite on Windows runners.
+  const join = (platform === 'win32' ? path.win32 : path.posix).join
   const out = []
   if (platform === 'win32') {
     // Native installer, then npm -g, then the Programs dir.
-    out.push(path.join(home, '.local', 'bin', 'claude.exe'))
-    out.push(path.join(home, '.local', 'bin', 'claude.cmd'))
-    if (env.APPDATA) out.push(path.join(env.APPDATA, 'npm', 'claude.cmd'))
-    if (env.LOCALAPPDATA) out.push(path.join(env.LOCALAPPDATA, 'Programs', 'claude', 'claude.exe'))
+    out.push(join(home, '.local', 'bin', 'claude.exe'))
+    out.push(join(home, '.local', 'bin', 'claude.cmd'))
+    if (env.APPDATA) out.push(join(env.APPDATA, 'npm', 'claude.cmd'))
+    if (env.LOCALAPPDATA) out.push(join(env.LOCALAPPDATA, 'Programs', 'claude', 'claude.exe'))
   } else {
-    out.push(path.join(home, '.local', 'bin', 'claude'))
+    out.push(join(home, '.local', 'bin', 'claude'))
     out.push('/usr/local/bin/claude')
     if (platform === 'darwin') out.push('/opt/homebrew/bin/claude')
-    out.push(path.join(home, '.npm-global', 'bin', 'claude'))
-    out.push(path.join(home, '.bun', 'bin', 'claude'))
+    out.push(join(home, '.npm-global', 'bin', 'claude'))
+    out.push(join(home, '.bun', 'bin', 'claude'))
   }
   return [...new Set(out)]
 }

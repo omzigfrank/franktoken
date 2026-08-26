@@ -408,3 +408,18 @@ test('probeUsage reports why a token failed instead of guessing', async () => {
     globalThis.fetch = realFetch
   }
 })
+
+test('CLI candidates use the target platform separators, not the host OS', () => {
+  // path.join follows whatever OS the test runs on, so cliCandidates must not
+  // use it: on a Windows runner a darwin lookup came back with backslashes and
+  // failed the assertions above, which is what broke run #17.
+  for (const p of cliCandidates('darwin', '/Users/frank', {})) {
+    assert.ok(!p.includes('\\'), `darwin candidate carries a backslash: ${p}`)
+  }
+  for (const p of cliCandidates('linux', '/home/frank', {})) {
+    assert.ok(!p.includes('\\'), `linux candidate carries a backslash: ${p}`)
+  }
+  for (const p of cliCandidates('win32', 'C:\\Users\\frank', { APPDATA: 'C:\\AppData' })) {
+    assert.ok(!p.includes('/'), `win32 candidate carries a forward slash: ${p}`)
+  }
+})
