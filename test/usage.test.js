@@ -34,7 +34,10 @@ import {
   summarizeHistory,
   knownWindows,
   FULL_RESOLUTION_MS,
-  COARSE_BUCKET_MS
+  COARSE_BUCKET_MS,
+  MIN_SAMPLE_GAP_MS,
+  MAX_SERIES_POINTS,
+  seriesFor
 } from '../src/main/limitHistory.js'
 
 test('Claude usage keeps one complete snapshot per message id', () => {
@@ -864,4 +867,56 @@ test('a reset time drifting forward by seconds is not a window rollover', () => 
   const seg = currentSegment(rolled, 'five_hour', now)
   assert.equal(seg.length, 20)
   assert.equal(seg[0].pct, 3, 'segment starts after the rollover, not before')
+})
+
+test('sampling is floored so a fast poll loop cannot flood the history', () => {
+  const now = Date.parse('2026-08-26T22:00:00Z')
+  const windows = [{ id: 'five_hour', usedPercent: 27, estimated: false }]
+  // The dashboard polls every ~5s while the usage API is called every 90s. Once
+  // this recorded a sample per poll: 720 an hour instead of 40, with the whole
+  // history rewritten to disk each time.
+  let history = []
+  for (let s = 0; s < 3600; s += 5) history = addSample(history, windows, now + s * 1000)
+  const gaps = history.slice(1).map((h, i) => h.at - history[i].at)
+  assert.ok(history.length < 130, `expected the floor to cap growth, got ${history.length}`)
+  assert.ok(Math.min(...gaps) >= MIN_SAMPLE_GAP_MS, 'no two samples closer than the floor')
+
+  // Stamped with the API's own timestamp — the real path — it is exactly one
+  // sample per API response.
+  let stamped = []
+  for (let s = 0; s < 3600; s += 5) {
+    stamped = addSample(stamped, windows, now + Math.floor(s / 90) * 90_000)
+  }
+  assert.equal(stamped.length, 40)
+})
+
+test('a history bloated by the old sampler is thinned on load', () => {
+  const now = Date.parse('2026-08-26T23:00:00Z')
+  const bloat = []
+  for (let t = now - 6 * 3_600_000; t <= now; t += 5000) bloat.push({ at: t, w: { five_hour: { pct: 27 } } })
+  assert.ok(bloat.length > 4000)
+
+  const cleaned = pruneHistory(bloat, now)
+  assert.ok(cleaned.length < bloat.length / 5, 'dense legacy runs must actually shrink')
+  const gaps = cleaned.slice(1).map((s, i) => s.at - cleaned[i].at)
+  assert.ok(Math.min(...gaps) >= MIN_SAMPLE_GAP_MS)
+  // Newest sample survives: the current reading must never be pruned away.
+  assert.equal(cleaned[cleaned.length - 1].at, now)
+})
+
+test('the charting series is capped and still ends at the newest point', () => {
+  const now = Date.parse('2026-08-26T23:00:00Z')
+  const history = []
+  for (let i = 2000; i >= 0; i--) history.push({ at: now - i * 30_000, w: { five_hour: { pct: 20 + i * 0.01 } } })
+
+  const series = seriesFor(history, 'five_hour', 24 * 3_600_000, now)
+  assert.ok(series.length <= MAX_SERIES_POINTS, `got ${series.length}`)
+  assert.ok(series.length > 10, 'thinning must not collapse the series')
+  // The line has to end at "now", or the chart lies about the current value.
+  assert.equal(series[series.length - 1].t, now)
+  for (let i = 1; i < series.length; i++) assert.ok(series[i].t > series[i - 1].t, 'still chronological')
+
+  // Under the cap nothing is touched.
+  const small = seriesFor(history.slice(-50), 'five_hour', 24 * 3_600_000, now)
+  assert.equal(small.length, 50)
 })

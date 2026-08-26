@@ -29,8 +29,18 @@ The v0.3 rebuild adds:
   `chatgpt-work/`) and conversations become sessions with timestamps, model slugs, and
   clearly-labeled estimated tokens (chars/4).
 - **One-click shareable snapshot**: the "⬡" button exports a **single self-contained HTML
-  report** (no external assets) with interactive charts, session flyouts, and 4-way session
-  comparison overlays — for sharing without standing up a Hub.
+  report** (no external assets) with interactive charts, session flyouts, 4-way session
+  comparison overlays, and the account-wide burn rate and trend — for sharing without
+  standing up a Hub.
+- **Account-wide live statistics**, at the top of the Overview and each provider view. The usage
+  API is the only signal that is current no matter which device or surface did the work, so every
+  successful poll is recorded and turned into real statistics: percentage trend, **burn rate** in
+  points/hour, and **when the window would hit 100%** — including whether that lands before it
+  resets, which is the question that actually matters. None of it needs anything running locally.
+  Deliberately conservative: rate and projection are withheld rather than guessed when the samples
+  are too close together, estimated windows are never recorded (so a rate-limited spell leaves a
+  gap, not a false flat line), and the rate is measured only within the current window so a
+  rollover cannot produce a negative slope.
 
 ![FrankToken icon](resources/icon.png)
 

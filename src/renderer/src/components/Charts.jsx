@@ -9,7 +9,7 @@ const axis = { stroke: '#5e6b7e', fontSize: 10 }
 const grid = '#1b2230'
 
 export function TokenArea({ data, color = '#6ea8fe' }) {
-  const d = data.map((x) => ({ ...x, label: x.label || x.date.slice(5) }))
+  const d = data.map((x) => ({ ...x, label: x.label || (typeof x.date === 'string' ? x.date.slice(5) : '') }))
   return (
     <ResponsiveContainer width="100%" height={180}>
       <AreaChart data={d} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
@@ -44,7 +44,7 @@ export function TokenArea({ data, color = '#6ea8fe' }) {
 }
 
 export function CostBars({ data, color = '#34d399' }) {
-  const d = data.map((x) => ({ ...x, label: x.label || x.date.slice(5) }))
+  const d = data.map((x) => ({ ...x, label: x.label || (typeof x.date === 'string' ? x.date.slice(5) : '') }))
   return (
     <ResponsiveContainer width="100%" height={180}>
       <BarChart data={d} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
@@ -89,14 +89,16 @@ export function SessionScatter({ data, onPick }) {
 }
 
 export function TokenStackedBars({ data }) {
-  const rows = [...data].reverse().map((session) => ({
-    label: session.title.length > 16 ? `${session.title.slice(0, 16)}…` : session.title,
+  const rows = [...data].reverse().map((session) => {
+    const title = session.title || session.primaryModel || session.id || 'session'
+    return {
+    label: title.length > 16 ? `${title.slice(0, 16)}…` : title,
     input: session.tokens.input,
     cached: session.tokens.cachedInput,
     cacheWrite: session.tokens.cacheWrite,
     output: session.tokens.output,
     reasoning: session.tokens.reasoning
-  }))
+  }})
   return (
     <ResponsiveContainer width="100%" height={280}>
       <BarChart data={rows} layout="vertical" margin={{ top: 10, right: 16, bottom: 4, left: 22 }}>
