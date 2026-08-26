@@ -33,25 +33,74 @@ const TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token'
 // Claude Code's public OAuth client id (PKCE app — not a secret).
 const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 
-// Soft reference budgets (tokens) — only used as a FALLBACK when the live
-// usage API is unavailable (no/expired token, offline).
-const BUDGET = { '5h': 12_000_000, weekly: 70_000_000 }
+/**
+ * Fallback window shown when the live usage API is unavailable. Plan limits
+ * are not published anywhere, so any percentage we invented here would be
+ * fiction — and a fabricated "100%" reads as "you are out of quota". Report
+ * the token volume actually observed on this device and leave the gauge
+ * explicitly unknown instead.
+ */
+export function estimatedWindow(id, label, minutes, events, now = Date.now()) {
+  const start = now - minutes * 60_000
+  const used = events.reduce((sum, e) => (e.ts >= start ? sum + (e.total || 0) : sum), 0)
+  return {
+    id,
+    label,
+    usedPercent: null,
+    unknown: true,
+    windowMinutes: minutes,
+    resetsAt: null,
+    estimated: true,
+    usedTokens: used,
+    budgetTokens: null
+  }
+}
 
 function credentialsCandidates() {
   return claudeRoots().map((r) => path.join(r, '.credentials.json'))
 }
 
+// Why the last credential lookup came up empty. Without this, a permission
+// error, a half-written file, and "never signed in here" all look identical
+// to the user — and live limits silently never work.
+let credentialSearch = { checked: [], problems: [] }
+
 function readCredentialsFile() {
   for (const file of credentialsCandidates()) {
+    credentialSearch.checked.push(file)
+    let text
     try {
-      const cred = JSON.parse(fs.readFileSync(file, 'utf8'))
-      const o = cred.claudeAiOauth || cred
-      if (o?.accessToken || o?.refreshToken) return { file, raw: cred, oauth: o }
-    } catch {
-      /* try next */
+      text = fs.readFileSync(file, 'utf8')
+    } catch (err) {
+      // ENOENT is the normal "not signed in on this machine" case; anything
+      // else (EACCES, EPERM, EBUSY) is a real problem worth surfacing.
+      if (err?.code && err.code !== 'ENOENT') credentialSearch.problems.push(`${file} — ${err.code}`)
+      continue
     }
+    let cred
+    try {
+      cred = JSON.parse(text)
+    } catch {
+      credentialSearch.problems.push(`${file} — not valid JSON`)
+      continue
+    }
+    const o = cred.claudeAiOauth || cred
+    if (o?.accessToken || o?.refreshToken) return { file, raw: cred, oauth: o }
+    credentialSearch.problems.push(`${file} — no OAuth token inside`)
   }
   return null
+}
+
+/** Human-readable account of where we looked for a token and what we found. */
+export function credentialHint(search = credentialSearch, platform = process.platform) {
+  const parts = []
+  if (search.problems.length) {
+    parts.push(`Found but could not use: ${search.problems.join('; ')}.`)
+  } else if (search.checked.length) {
+    parts.push(`Looked in ${search.checked.join(', ')}${platform === 'darwin' ? ' and the login Keychain' : ''}.`)
+  }
+  parts.push('Run `claude` on this machine and sign in once (/login) to enable live account-wide limits.')
+  return parts.join(' ')
 }
 
 // Newer Claude Code builds on macOS store credentials in the login Keychain
@@ -80,6 +129,7 @@ function readToken() {
   if (memoryToken?.accessToken && memoryToken.expiresAt > Date.now() + 120_000) {
     return { token: memoryToken.accessToken, expired: false, hasRefresh: !!memoryToken.refreshToken }
   }
+  credentialSearch = { checked: [], problems: [] }
   const cred = readCredentialsFile() || readKeychainCredentials()
   if (!cred?.oauth?.accessToken) {
     if (cred?.oauth?.refreshToken) return { token: null, expired: true, hasRefresh: true }
@@ -527,7 +577,14 @@ export default {
       base.error =
         'No local Claude sessions found. Account-wide limits still shown live; session detail appears once a Claude surface runs on this machine.'
     } else if (base.meta.sessions === 0) {
-      base.error = `No Claude usage in this range. ${allFiles.length} local session${allFiles.length === 1 ? '' : 's'} found outside it — try 7D or 30D.`
+      const last = base.meta.lastActivity
+      const quiet = last ? Math.round((Date.now() - last) / 3_600_000) : null
+      base.error =
+        `No Claude usage on this device in this range — its newest transcript is ` +
+        `${quiet != null ? (quiet < 48 ? `${quiet}h old` : `${Math.round(quiet / 24)}d old`) : 'older than the range'}. ` +
+        `${allFiles.length} session${allFiles.length === 1 ? '' : 's'} stored outside it — try 7D or 30D. ` +
+        `Work done in Claude Code on the web, on another machine, or in Claude.ai / Cowork leaves no transcript here; ` +
+        `that usage still counts against the account-wide rate-limit windows.`
     }
 
     const now = Date.now()
@@ -537,7 +594,7 @@ export default {
     const reasonText = {
       'rate-limited': 'Live limits temporarily rate-limited',
       'token-expired': 'OAuth token expired and auto-refresh failed — run `claude` and /login once',
-      'no-token': 'No Claude OAuth token found (checked credentials files and macOS Keychain)',
+      'no-token': `No Claude OAuth token found. ${credentialHint()}`,
       network: 'Network unavailable'
     }
 
@@ -556,31 +613,15 @@ export default {
         base.windowsStale = true
       }
     } else {
-      // Live API unavailable: show an ESTIMATED consumption gauge from local
-      // token volume so usage is still visible (clearly labeled "est.").
-      const mkWindow = (id, label, minutes, budget) => {
-        const start = now - minutes * 60_000
-        const inWin = events.filter((e) => e.ts >= start)
-        const used = inWin.reduce((s, e) => s + e.total, 0)
-        const oldest = inWin.length ? Math.min(...inWin.map((e) => e.ts)) : null
-        return {
-          id,
-          label: `${label} (est.)`,
-          usedPercent: budget ? Math.min(100, (used / budget) * 100) : null,
-          windowMinutes: minutes,
-          resetsAt: oldest ? oldest + minutes * 60_000 : null,
-          estimated: true,
-          usedTokens: used,
-          budgetTokens: budget
-        }
-      }
+      // Live API unavailable: report the token volume seen on this device and
+      // leave the gauge unknown — we have no real limit to measure against.
       base.windows = [
-        mkWindow('five_hour', '5-Hour Window', 300, BUDGET['5h']),
-        mkWindow('seven_day', 'Weekly Window', 10080, BUDGET.weekly)
+        estimatedWindow('five_hour', '5-Hour Window', 300, events, now),
+        estimatedWindow('seven_day', 'Weekly Window', 10080, events, now)
       ]
       base.windowsEstimated = true
       const why = reasonText[live?.reason] || 'Live limits unavailable'
-      base.windowsNote = `${why}. Showing an estimate from local tokens — run \`claude\` (or /login) to restore exact live limits.`
+      base.windowsNote = `${why} Percentages need the live API — the figures below are only the tokens this device recorded in each window.`
     }
 
     const sum = summarize(events, r, { costEstimated: true })
