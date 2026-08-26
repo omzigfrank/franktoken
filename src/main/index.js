@@ -6,7 +6,8 @@ import path from 'node:path'
 import Store from 'electron-store'
 import { fetchAll } from './providers/registry.js'
 import { fetchHub, mergeSnapshots } from './providers/hub.js'
-import { claudeRoots } from './providers/claude.js'
+import { claudeRoots, setManualToken } from './providers/claude.js'
+import { connectStatus, launchLogin, saveManualToken } from './claudeAuth.js'
 import { IMPORT_ROOT } from './providers/chatgpt.js'
 import { buildReportHtml } from './report.js'
 
@@ -24,6 +25,9 @@ const store = new Store({
     bounds: { width: 1280, height: 820 },
     hubUrl: '',
     hubReadToken: '',
+    // Last-resort Claude token pasted in Settings -> Connect Claude, used only
+    // when the CLI's own credentials are unreadable on this machine.
+    claudeAccessToken: '',
     // analytics range: preset id + custom bounds (epoch ms)
     range: { preset: '30d', from: null, to: null, granularity: 'auto' }
   }
@@ -335,6 +339,25 @@ ipcMain.handle('report:export', async () => {
     return { ok: false, error: String(err?.message || err) }
   }
 })
+// --- Connect Claude ------------------------------------------------------ //
+ipcMain.handle('claude:status', () => connectStatus())
+ipcMain.handle('claude:launch-login', async () => {
+  const result = await launchLogin()
+  // The login writes credentials only after the user finishes in the browser,
+  // so there is nothing to re-read yet. The file watcher on ~/.claude picks it
+  // up, and the panel polls status while it is open.
+  return result
+})
+ipcMain.handle('claude:set-token', async (_e, token) => {
+  const result = await saveManualToken(token)
+  // Persist only a token that verified, so a bad paste can't wedge startup.
+  if (result.ok) {
+    store.set('claudeAccessToken', result.cleared ? '' : String(token || '').trim())
+    await poll()
+  }
+  return result
+})
+
 ipcMain.on('window:hide', () => win && win.hide())
 ipcMain.on('window:minimize', () => win && win.minimize())
 ipcMain.on('app:quit', () => { app.isQuitting = true; app.quit() })
@@ -352,6 +375,9 @@ if (!gotLock) {
     createWindow()
     createTray()
     setLogin(!!store.get('launchAtLogin'))
+    // Re-arm a previously verified pasted token before the first poll, so live
+    // limits survive a restart on machines with no readable CLI credentials.
+    setManualToken(store.get('claudeAccessToken') || null)
     await poll()
     startPolling()
     watchRoots()

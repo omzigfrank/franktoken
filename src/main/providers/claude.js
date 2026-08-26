@@ -125,14 +125,45 @@ function readKeychainCredentials() {
 // In-memory token from a refresh we could not persist (keychain-backed creds).
 let memoryToken = null // { accessToken, expiresAt, refreshToken }
 
+// Token pasted into Settings -> Connect Claude, for machines where the CLI's
+// own credentials are unreadable. It arrives without a refresh token, so it is
+// strictly a last resort and expires on its own schedule.
+let manualToken = null
+
+/** Set (or clear, with a falsy value) the manually supplied access token. */
+export function setManualToken(token) {
+  const next = token == null ? '' : String(token).trim()
+  manualToken = next || null
+  // Any cached live result was produced under the old credential; drop it and
+  // clear the failure backoff so the next poll re-tests immediately.
+  liveCache = null
+  lastFailure = null
+  lastAttemptAt = 0
+  return !!manualToken
+}
+
 function readToken() {
   if (memoryToken?.accessToken && memoryToken.expiresAt > Date.now() + 120_000) {
-    return { token: memoryToken.accessToken, expired: false, hasRefresh: !!memoryToken.refreshToken }
+    return {
+      token: memoryToken.accessToken,
+      expired: false,
+      hasRefresh: !!memoryToken.refreshToken,
+      source: 'refreshed',
+      file: null
+    }
   }
   credentialSearch = { checked: [], problems: [] }
   const cred = readCredentialsFile() || readKeychainCredentials()
   if (!cred?.oauth?.accessToken) {
-    if (cred?.oauth?.refreshToken) return { token: null, expired: true, hasRefresh: true }
+    if (cred?.oauth?.refreshToken) {
+      return {
+        token: null,
+        expired: true,
+        hasRefresh: true,
+        source: cred.file ? 'file' : 'keychain',
+        file: cred.file || null
+      }
+    }
     return null
   }
   const o = cred.oauth
@@ -141,7 +172,10 @@ function readToken() {
     // expiresAt is epoch ms; treat as expired 2 min early so we refresh
     // before the API starts rejecting us mid-poll.
     expired: !!(o.expiresAt && o.expiresAt < Date.now() + 120_000),
-    hasRefresh: !!o.refreshToken
+    hasRefresh: !!o.refreshToken,
+    source: cred.file ? 'file' : 'keychain',
+    file: cred.file || null,
+    expiresAt: o.expiresAt || null
   }
 }
 
@@ -291,6 +325,83 @@ export function limitsWindows(limits) {
   return out
 }
 
+// One place that knows how to call the account-wide usage endpoint, shared by
+// the poller and by the Connect Claude panel's "test this token" probe.
+function usageFetch(token, timeoutMs = 8000) {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  return fetch(USAGE_URL, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'anthropic-beta': 'oauth-2025-04-20',
+      'Content-Type': 'application/json',
+      'User-Agent': 'franktoken'
+    },
+    signal: ctrl.signal
+  }).finally(() => clearTimeout(t))
+}
+
+/**
+ * Test a token against the live usage endpoint and report what actually
+ * happened. The Connect Claude panel never claims a pasted token works —
+ * it shows the result of this call.
+ */
+export async function probeUsage(token) {
+  const trimmed = token == null ? '' : String(token).trim()
+  if (!trimmed) return { ok: false, reason: 'empty' }
+  let res
+  try {
+    res = await usageFetch(trimmed, 10_000)
+  } catch {
+    return { ok: false, reason: 'network' }
+  }
+  if (res.status === 401 || res.status === 403) return { ok: false, reason: 'rejected', status: res.status }
+  if (res.status === 429) return { ok: false, reason: 'rate-limited', status: 429 }
+  if (!res.ok) return { ok: false, reason: `http-${res.status}`, status: res.status }
+  let body
+  try {
+    body = await res.json()
+  } catch {
+    return { ok: false, reason: 'unreadable' }
+  }
+  let windows = limitsWindows(body.limits)
+  if (windows.length === 0) {
+    windows = [
+      apiWindow('five_hour', '5-Hour Limit', body.five_hour),
+      apiWindow('seven_day', 'Weekly · all models', body.seven_day)
+    ].filter(Boolean)
+  }
+  // Authenticated but the payload carried no window we recognize — worth
+  // distinguishing from a flat rejection, since it means the API shape moved.
+  if (windows.length === 0) return { ok: false, reason: 'no-windows' }
+  return { ok: true, windowCount: windows.length, labels: windows.map((w) => w.label) }
+}
+
+/**
+ * Everything the Connect Claude panel needs to explain the current state:
+ * which credential we are using, when it expires, why the last live call
+ * failed, and where we looked if we found nothing.
+ */
+export function authStatus() {
+  const auth = readToken()
+  const usable = !!(auth?.token && !auth.expired) || (!!manualToken && !auth?.token)
+  return {
+    connected: usable,
+    source: auth?.source || (manualToken ? 'manual' : null),
+    file: auth?.file || null,
+    expiresAt: auth?.expiresAt || null,
+    expired: !!auth?.expired,
+    canRefresh: !!auth?.hasRefresh,
+    hasManualToken: !!manualToken,
+    checked: [...credentialSearch.checked],
+    problems: [...credentialSearch.problems],
+    platform: process.platform,
+    lastFailure: lastFailure?.reason || null,
+    liveAt: liveCache?.at || null,
+    hint: credentialHint()
+  }
+}
+
 // Cache the last successful live response across polls so transient failures
 // (429 rate limiting, brief network blips) don't wipe the real numbers.
 let liveCache = null // { windows, extra, at }
@@ -317,7 +428,13 @@ async function fetchLiveWindows() {
   // automatically, so live limits never require a manual /login.
   if ((!auth || auth.expired || !auth.token) && (auth?.hasRefresh || !auth)) {
     const fresh = await refreshAccessToken()
-    if (fresh) auth = { token: fresh, expired: false }
+    if (fresh) auth = { token: fresh, expired: false, source: 'refreshed' }
+  }
+  // Nothing usable from the CLI's own credentials: fall back to a token the
+  // user pasted in Settings. Cannot be refreshed, so it simply stops working
+  // when it expires — the panel surfaces that as an expired-token state.
+  if ((!auth || auth.expired || !auth.token) && manualToken) {
+    auth = { token: manualToken, expired: false, hasRefresh: false, source: 'manual' }
   }
   if (!auth || auth.expired || !auth.token) {
     const reason = auth?.expired ? 'token-expired' : 'no-token'
@@ -325,25 +442,12 @@ async function fetchLiveWindows() {
     return liveCache ? { ok: true, ...liveCache, stale: true, reason } : { ok: false, reason }
   }
   try {
-    const doFetch = (token) => {
-      const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), 8000)
-      return fetch(USAGE_URL, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'anthropic-beta': 'oauth-2025-04-20',
-          'Content-Type': 'application/json',
-          'User-Agent': 'franktoken'
-        },
-        signal: ctrl.signal
-      }).finally(() => clearTimeout(t))
-    }
-    let res = await doFetch(auth.token)
+    let res = await usageFetch(auth.token)
     // Server rejected the token even though it looked valid locally (e.g.
     // revoked or clock skew): refresh once and retry.
     if (res.status === 401) {
       const fresh = await refreshAccessToken()
-      if (fresh) res = await doFetch(fresh)
+      if (fresh) res = await usageFetch(fresh)
     }
     if (!res.ok) {
       const reason = res.status === 429 ? 'rate-limited' : `http-${res.status}`

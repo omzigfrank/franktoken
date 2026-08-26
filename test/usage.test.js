@@ -8,8 +8,12 @@ import {
   limitsWindows,
   surfaceLabel,
   estimatedWindow,
-  credentialHint
+  credentialHint,
+  authStatus,
+  setManualToken,
+  probeUsage
 } from '../src/main/providers/claude.js'
+import { cliCandidates, loginCommand, linuxTerminal } from '../src/main/claudeAuth.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
 import { estimateTextTokens, chatgptConversationEvents } from '../src/main/providers/chatgpt.js'
 import { summarize, priceFor, PRICING } from '../src/main/providers/util.js'
@@ -285,3 +289,122 @@ test('desktop and Hub snapshots merge matching sessions without double counting 
   assert.equal(merged[0].cost.total, 0.03)
 })
 
+
+// --- Connect Claude ------------------------------------------------------ //
+
+test('CLI candidate paths match the platform they are asked about', () => {
+  const win = cliCandidates('win32', 'C:\\Users\\frank', { APPDATA: 'C:\\Users\\frank\\AppData\\Roaming' })
+  // Windows must look for the .exe/.cmd forms and the npm global shim; a bare
+  // "claude" would never be found there.
+  assert.ok(win.some((p) => p.endsWith('claude.exe')))
+  assert.ok(win.some((p) => p.endsWith('claude.cmd')))
+  assert.ok(win.some((p) => p.includes('AppData') && p.includes('npm')))
+  assert.ok(!win.some((p) => p.endsWith('/claude')))
+
+  const mac = cliCandidates('darwin', '/Users/frank', {})
+  assert.ok(mac.includes('/Users/frank/.local/bin/claude'))
+  assert.ok(mac.includes('/opt/homebrew/bin/claude'))
+
+  // Homebrew's path is macOS-only; don't offer it on Linux.
+  const linux = cliCandidates('linux', '/home/frank', {})
+  assert.ok(linux.includes('/home/frank/.local/bin/claude'))
+  assert.ok(!linux.includes('/opt/homebrew/bin/claude'))
+
+  // No duplicates, or the panel would report the same path twice.
+  assert.equal(new Set(linux).size, linux.length)
+})
+
+test('login command opens a real terminal per platform', () => {
+  const win = loginCommand('C:\\Users\\frank\\.local\\bin\\claude.exe', 'win32')
+  assert.equal(win.file, 'cmd.exe')
+  // The empty argument is the window title: without it `start` consumes the
+  // command path as the title and opens an empty shell.
+  assert.deepEqual(win.args.slice(0, 3), ['/c', 'start', ''])
+  assert.ok(win.args.includes('C:\\Users\\frank\\.local\\bin\\claude.exe'))
+
+  const mac = loginCommand('/Users/frank/.local/bin/claude', 'darwin')
+  assert.equal(mac.file, 'osascript')
+  assert.ok(mac.args[1].includes('do script'))
+  assert.ok(mac.args[1].includes("'/Users/frank/.local/bin/claude'"))
+
+  // Linux needs a terminal emulator; without one the caller must be told
+  // rather than silently spawning nothing.
+  assert.equal(loginCommand('/home/frank/.local/bin/claude', 'linux', null), null)
+  const linux = loginCommand('/home/frank/.local/bin/claude', 'linux', { file: 'konsole', flag: '-e' })
+  assert.deepEqual(linux, { file: 'konsole', args: ['-e', '/home/frank/.local/bin/claude'] })
+
+  assert.equal(loginCommand(null, 'darwin'), null)
+})
+
+test('login command escapes quotes so a path cannot break out of the AppleScript', () => {
+  const cmd = loginCommand('/Users/frank/we"ird/claude', 'darwin')
+  // A raw " would terminate the `do script` string early and run whatever
+  // followed it as AppleScript.
+  assert.ok(cmd.args[1].includes('we\\"ird'))
+  assert.ok(!/[^\\]"we/.test(cmd.args[1]))
+})
+
+test('linuxTerminal reports nothing when no emulator is on PATH', () => {
+  assert.equal(linuxTerminal(['/nonexistent-bin', '']), null)
+})
+
+test('a manually pasted token is tracked as its own credential source', () => {
+  assert.equal(setManualToken('  sk-test-token  '), true)
+  assert.equal(authStatus().hasManualToken, true)
+  // Clearing must actually clear, or a revoked token lingers forever.
+  assert.equal(setManualToken(''), false)
+  assert.equal(authStatus().hasManualToken, false)
+  assert.equal(setManualToken(null), false)
+})
+
+test('authStatus always explains itself', () => {
+  const s = authStatus()
+  assert.equal(typeof s.hint, 'string')
+  assert.ok(s.hint.length > 0)
+  assert.ok(Array.isArray(s.checked))
+  assert.ok(Array.isArray(s.problems))
+  assert.equal(s.platform, process.platform)
+})
+
+test('probeUsage reports why a token failed instead of guessing', async () => {
+  const realFetch = globalThis.fetch
+  const reply = (status, body) => () =>
+    Promise.resolve({
+      status,
+      ok: status >= 200 && status < 300,
+      json: () => Promise.resolve(body)
+    })
+  try {
+    assert.deepEqual(await probeUsage('  '), { ok: false, reason: 'empty' })
+
+    globalThis.fetch = reply(401, {})
+    assert.deepEqual(await probeUsage('t'), { ok: false, reason: 'rejected', status: 401 })
+
+    globalThis.fetch = reply(429, {})
+    assert.deepEqual(await probeUsage('t'), { ok: false, reason: 'rate-limited', status: 429 })
+
+    globalThis.fetch = reply(500, {})
+    assert.deepEqual(await probeUsage('t'), { ok: false, reason: 'http-500', status: 500 })
+
+    // Authenticated but unrecognizable: distinct from a rejection, because the
+    // fix is different (the API shape moved, the token is fine).
+    globalThis.fetch = reply(200, { limits: [] })
+    assert.deepEqual(await probeUsage('t'), { ok: false, reason: 'no-windows' })
+
+    globalThis.fetch = () => Promise.reject(new Error('offline'))
+    assert.deepEqual(await probeUsage('t'), { ok: false, reason: 'network' })
+
+    globalThis.fetch = reply(200, {
+      limits: [
+        { kind: 'session', utilization: 42, resets_at: '2026-08-26T20:00:00Z' },
+        { group: 'weekly', utilization: 7, scope: { model: { display_name: 'Opus' } } }
+      ]
+    })
+    const ok = await probeUsage('t')
+    assert.equal(ok.ok, true)
+    assert.equal(ok.windowCount, 2)
+    assert.deepEqual(ok.labels, ['5-Hour Limit', 'Weekly · Opus'])
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
