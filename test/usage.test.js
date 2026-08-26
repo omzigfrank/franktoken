@@ -13,7 +13,10 @@ import {
   setManualToken,
   probeUsage,
   emptyRangeMessage,
-  suggestRanges
+  suggestRanges,
+  backoffDelay,
+  restoreLiveCache,
+  snapshotLiveCache
 } from '../src/main/providers/claude.js'
 import { cliCandidates, loginCommand, linuxTerminal } from '../src/main/claudeAuth.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
@@ -627,4 +630,46 @@ test('range suggestions name only ranges that would actually contain the call', 
 
   // Beyond every preset, only a custom range reaches it.
   assert.match(suggestRanges(now - 200 * day, from, now), /older than 90D, so use Custom/)
+})
+
+test('live-limit backoff escalates and honors Retry-After', () => {
+  const min = 60_000
+  // Retrying a 429 on the normal 90s interval is what keeps an account
+  // rate-limited, so consecutive failures must back off hard.
+  assert.equal(backoffDelay(1), 2 * min)
+  assert.equal(backoffDelay(2), 5 * min)
+  assert.equal(backoffDelay(3), 15 * min)
+  assert.equal(backoffDelay(4), 30 * min)
+  assert.equal(backoffDelay(9), 30 * min, 'caps rather than growing forever')
+  // A streak of 0 or nonsense must still produce a real delay, never 0.
+  assert.equal(backoffDelay(0), 2 * min)
+
+  // Trust a server-provided Retry-After (seconds), but never sleep longer than
+  // the largest step — a hostile or buggy header shouldn't wedge live limits.
+  assert.equal(backoffDelay(1, '30'), 30_000)
+  assert.equal(backoffDelay(1, 120), 2 * min)
+  assert.equal(backoffDelay(1, 99_999), 30 * min)
+  // Garbage headers fall through to the streak schedule.
+  assert.equal(backoffDelay(2, 'soon'), 5 * min)
+  assert.equal(backoffDelay(2, '-5'), 5 * min)
+  assert.equal(backoffDelay(2, null), 5 * min)
+})
+
+test('persisted live windows are restored only while still plausible', () => {
+  const now = Date.parse('2026-08-26T20:00:00Z')
+  const saved = {
+    windows: [{ id: 'five_hour', label: '5-Hour Limit', usedPercent: 13 }],
+    extra: null,
+    at: now - 5 * 60_000
+  }
+  // Five minutes old: worth showing (labelled stale) instead of N/A.
+  assert.equal(restoreLiveCache(saved, now), true)
+
+  // An hour old: the percentages have likely moved, so N/A is more honest.
+  assert.equal(restoreLiveCache({ ...saved, at: now - 60 * 60_000 }, now), false)
+
+  // Malformed or empty payloads must never be adopted.
+  assert.equal(restoreLiveCache(null, now), false)
+  assert.equal(restoreLiveCache({ windows: [], at: now }, now), false)
+  assert.equal(restoreLiveCache({ windows: saved.windows }, now), false)
 })

@@ -6,7 +6,12 @@ import path from 'node:path'
 import Store from 'electron-store'
 import { fetchAll } from './providers/registry.js'
 import { fetchHub, mergeSnapshots } from './providers/hub.js'
-import { claudeRoots, setManualToken } from './providers/claude.js'
+import {
+  claudeRoots,
+  setManualToken,
+  snapshotLiveCache,
+  restoreLiveCache
+} from './providers/claude.js'
 import { resolvePreset } from './providers/util.js'
 import { connectStatus, launchLogin, saveManualToken } from './claudeAuth.js'
 import { IMPORT_ROOT } from './providers/chatgpt.js'
@@ -29,6 +34,9 @@ const store = new Store({
     // Last-resort Claude token pasted in Settings -> Connect Claude, used only
     // when the CLI's own credentials are unreadable on this machine.
     claudeAccessToken: '',
+    // Last good account-wide windows. Persisted so a restart that lands on a
+    // rate-limited API shows the numbers from minutes ago rather than N/A.
+    claudeLiveCache: null,
     // analytics range: preset id + custom bounds (epoch ms)
     range: { preset: '30d', from: null, to: null, granularity: 'auto' }
   }
@@ -208,6 +216,9 @@ async function poll() {
       })
     ])
     lastSnapshots = mergeSnapshots(local, remote, range)
+    // Keep the last successful live windows on disk for the next cold start.
+    const live = snapshotLiveCache()
+    if (live) store.set('claudeLiveCache', live)
     updateTray(lastSnapshots)
     if (win && !win.isDestroyed()) {
       win.webContents.send('snapshot:update', {
@@ -369,6 +380,9 @@ if (!gotLock) {
     // Re-arm a previously verified pasted token before the first poll, so live
     // limits survive a restart on machines with no readable CLI credentials.
     setManualToken(store.get('claudeAccessToken') || null)
+    // Seed the live windows from the last run so the first paint after a
+    // restart is not N/A while the API cooldown runs.
+    restoreLiveCache(store.get('claudeLiveCache'))
     await poll()
     startPolling()
     watchRoots()
