@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import Ring from './Ring.jsx'
 import WindowBar from './WindowBar.jsx'
+import AccountWide from './AccountWide.jsx'
 import { TokenArea, CostBars } from './Charts.jsx'
 import { fmtTokens, fmtUsd, fmtAgo } from '../format.js'
 
@@ -65,6 +66,7 @@ export default function ProviderView({ s, rangeLbl = '30D' }) {
 
       {s.available && (
         <>
+          <AccountWide snapshot={s} />
           <div className="grid cols-2">
             <div className="card">
               <h3>Rate-limit windows</h3>

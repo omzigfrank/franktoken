@@ -13,6 +13,7 @@ import {
   restoreLiveCache
 } from './providers/claude.js'
 import { resolvePreset } from './providers/util.js'
+import { addSample, summarizeHistory } from './limitHistory.js'
 import { connectStatus, launchLogin, saveManualToken } from './claudeAuth.js'
 import { IMPORT_ROOT } from './providers/chatgpt.js'
 import { buildReportHtml } from './report.js'
@@ -37,6 +38,10 @@ const store = new Store({
     // Last good account-wide windows. Persisted so a restart that lands on a
     // rate-limited API shows the numbers from minutes ago rather than N/A.
     claudeLiveCache: null,
+    // Account-wide limit samples. This is the one signal that is live for every
+    // device and surface, so it is recorded continuously to give trend, burn
+    // rate and projection without anything running locally.
+    claudeLimitHistory: [],
     // analytics range: preset id + custom bounds (epoch ms)
     range: { preset: '30d', from: null, to: null, granularity: 'auto' }
   }
@@ -219,6 +224,18 @@ async function poll() {
     // Keep the last successful live windows on disk for the next cold start.
     const live = snapshotLiveCache()
     if (live) store.set('claudeLiveCache', live)
+
+    // Record the account-wide windows every poll, then hand the derived
+    // statistics back on the snapshot. Sampling is driven by real live data
+    // only: addSample ignores estimated windows, so a rate-limited or
+    // signed-out period leaves a gap rather than a false flat line.
+    const claude = lastSnapshots.find((s) => s.id === 'claude')
+    if (claude?.windows?.length) {
+      const history = addSample(store.get('claudeLimitHistory'), claude.windows)
+      store.set('claudeLimitHistory', history)
+      claude.limitStats = summarizeHistory(history, claude.windows)
+      claude.limitSamples = history.length
+    }
     updateTray(lastSnapshots)
     if (win && !win.isDestroyed()) {
       win.webContents.send('snapshot:update', {
