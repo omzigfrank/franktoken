@@ -6,12 +6,23 @@ import { fmtReset, fmtTokens, usageColor } from '../format.js'
 // surface did the work — unlike the token/cost tiles, which can only ever
 // describe local transcripts.
 
-function fmtRate(perHour) {
-  if (perHour == null) return null
-  const v = Math.abs(perHour)
-  if (v < 0.05) return 'flat'
-  const sign = perHour > 0 ? '+' : '−'
-  return `${sign}${v < 1 ? v.toFixed(2) : v.toFixed(1)} pts/hr`
+function fmtSpan(ms) {
+  if (!ms) return null
+  const m = Math.round(ms / 60_000)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  return h < 24 ? `${h}h ${m % 60}m` : `${Math.round(h / 24)}d`
+}
+
+// Name the measured span alongside the rate. "flat" on its own reads like the
+// feature is broken; "flat over 51m" shows it measured and found no movement.
+function fmtRate(rate) {
+  if (!rate || rate.perHour == null) return null
+  const v = Math.abs(rate.perHour)
+  const span = fmtSpan(rate.spanMs)
+  if (v < 0.05) return span ? `flat over ${span}` : 'flat'
+  const sign = rate.perHour > 0 ? '+' : '−'
+  return `${sign}${v < 1 ? v.toFixed(2) : v.toFixed(1)} pts/hr${span ? ` over ${span}` : ''}`
 }
 
 function fmtHours(h) {
@@ -76,7 +87,7 @@ export default function AccountWide({ snapshot }) {
         {windows.map((w) => {
           const st = stats[w.id] || {}
           const color = usageColor(w.usedPercent)
-          const rate = st.rate ? fmtRate(st.rate.perHour) : null
+          const rate = fmtRate(st.rate)
           const proj = st.projection
           return (
             <div className="aw-win" key={w.id}>
@@ -116,7 +127,7 @@ export default function AccountWide({ snapshot }) {
                       <b>
                         {proj
                           ? `in ${fmtHours(proj.hoursLeft)}`
-                          : rate === 'flat'
+                          : rate && rate.startsWith('flat')
                             ? 'not at this rate'
                             : '—'}
                       </b>

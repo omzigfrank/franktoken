@@ -25,6 +25,14 @@ export const FULL_RESOLUTION_MS = 6 * HOUR
 export const COARSE_BUCKET_MS = 15 * MINUTE
 export const MAX_AGE_MS = 30 * DAY
 
+// A genuine rollover moves resets_at forward by the whole window — 5 hours or
+// 7 days. The API also nudges that timestamp forward by seconds through normal
+// rounding, so any-forward-movement is far too sensitive: it restarted the
+// segment on nearly every poll, collapsing 35 samples to 1 and reporting "not
+// enough data yet" forever. This threshold sits well above that jitter and well
+// below the smallest real window.
+export const ROLLOVER_JUMP_MS = 30 * MINUTE
+
 /** Compact one live-window array into a single history sample. */
 export function toSample(windows, now = Date.now()) {
   if (!Array.isArray(windows) || windows.length === 0) return null
@@ -97,9 +105,14 @@ export function currentSegment(history, id, now = Date.now()) {
   // the reported reset time moved forward (an explicit rollover).
   let start = 0
   for (let i = 1; i < points.length; i++) {
+    // A percentage falling is the reliable rollover signal.
     const droppedPercent = points[i].pct < points[i - 1].pct - 1
+    // A reset time jumping forward by most of a window is the other one. Small
+    // forward drift is just the server rounding and must be ignored.
     const rolledOver =
-      points[i].resetsAt && points[i - 1].resetsAt && points[i].resetsAt > points[i - 1].resetsAt
+      points[i].resetsAt &&
+      points[i - 1].resetsAt &&
+      points[i].resetsAt - points[i - 1].resetsAt > ROLLOVER_JUMP_MS
     if (droppedPercent || rolledOver) start = i
   }
   return points.slice(start).filter((p) => p.at <= now)
