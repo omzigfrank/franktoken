@@ -15,7 +15,16 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { HOME, exists, listJsonl, readJsonlLines, estimateCost, summarize, normalizeRange } from './util.js'
+import {
+  HOME,
+  exists,
+  listJsonl,
+  readJsonlLines,
+  estimateCost,
+  summarize,
+  normalizeRange,
+  RANGE_PRESETS
+} from './util.js'
 import { buildSessions, sessionCoverage } from './sessions.js'
 
 // Config dir: Claude Code honors CLAUDE_CONFIG_DIR; XDG installs may use
@@ -557,6 +566,25 @@ export function selectClaudeHistoryFiles(allFiles, days, now = Date.now()) {
 }
 
 /**
+ * Name only the presets that would actually contain the newest recorded call.
+ * Telling someone to "try 7D" when their newest call is 12 days old just sends
+ * them to another empty screen.
+ */
+export function suggestRanges(newestEventAt, from, now = Date.now()) {
+  if (!newestEventAt || newestEventAt >= from) return ''
+  const usable = Object.entries(RANGE_PRESETS)
+    .filter(([, days]) => now - days * 86_400_000 <= newestEventAt)
+    .sort((a, b) => a[1] - b[1])
+    .map(([id]) => id.toUpperCase())
+  if (usable.length === 0) {
+    // Older than every preset — Custom is the only range that reaches it.
+    return ' — older than 90D, so use Custom to see it'
+  }
+  const list = usable.length === 1 ? usable[0] : `${usable.slice(0, -1).join(', ')} or ${usable[usable.length - 1]}`
+  return ` — try ${list}`
+}
+
+/**
  * Explain an empty range honestly. The hard part is not the wording: the
  * provider only reads transcripts recent enough to matter for the requested
  * range, so "no usage rows" can mean either "nothing here records a model
@@ -603,14 +631,13 @@ export function emptyRangeMessage({
     message =
       `No Claude model calls in the ${scannedFiles} transcript${scannedFiles === 1 ? '' : 's'} ` +
       `active in this range. ${skipped} older transcript${skipped === 1 ? '' : 's'} not scanned ` +
-      `for it — try 7D or 30D. ${elsewhere}`
+      `for it — widen the range to include them. ${elsewhere}`
   } else {
     const hours = newestEventAt ? Math.round((now - newestEventAt) / 3_600_000) : null
     const age = hours == null ? 'not datable' : hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`
-    const wider = newestEventAt && newestEventAt < from ? ' — try 7D or 30D' : ''
     message =
       `No Claude model calls on this device in this range. Newest recorded call: ${age}` +
-      `${wider}. ${fileLabel} scanned. ${elsewhere}`
+      `${suggestRanges(newestEventAt, from, now)}. ${fileLabel} scanned. ${elsewhere}`
   }
 
   if (undatedRows > 0) {

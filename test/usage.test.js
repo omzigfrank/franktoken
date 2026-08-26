@@ -12,7 +12,8 @@ import {
   authStatus,
   setManualToken,
   probeUsage,
-  emptyRangeMessage
+  emptyRangeMessage,
+  suggestRanges
 } from '../src/main/providers/claude.js'
 import { cliCandidates, loginCommand, linuxTerminal } from '../src/main/claudeAuth.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
@@ -572,7 +573,9 @@ test('the empty-range explanation never claims more than was actually scanned', 
   const partial = emptyRangeMessage({ totalFiles: 70, scannedFiles: 1, usageRows: 0, now })
   assert.match(partial, /in the 1 transcript active in this range/)
   assert.match(partial, /69 older transcripts not scanned/)
-  assert.match(partial, /try 7D or 30D/)
+  // Cannot name an age here (the files holding usage were never read), so it
+  // must not name a specific preset either — just say to widen.
+  assert.match(partial, /widen the range/)
   // Regression: `files.length` once counted the characters of a label string,
   // yielding "19 transcripts" and "-17 older" from two files.
   assert.doesNotMatch(partial, /-\d/)
@@ -583,7 +586,8 @@ test('the empty-range explanation never claims more than was actually scanned', 
     newestEventAt: now - 3 * day, from: now - day, now
   })
   assert.match(stale, /Newest recorded call: 3d ago/)
-  assert.match(stale, /try 7D or 30D/)
+  // A 3-day-old call is reachable by every wider preset.
+  assert.match(stale, /try 7D, 30D or 90D/)
 
   // Hours, not days, for a recent one — and no "try wider" when it is already
   // inside the range.
@@ -599,4 +603,28 @@ test('the empty-range explanation never claims more than was actually scanned', 
     emptyRangeMessage({ totalFiles: 1, scannedFiles: 1, usageRows: 0, undatedRows: 4, now }),
     /4 usage rows had no readable timestamp/
   )
+})
+
+test('range suggestions name only ranges that would actually contain the call', () => {
+  const now = Date.parse('2026-08-26T19:40:00Z')
+  const day = 86_400_000
+  const from = now - day // a 24H range
+
+  // Inside the range already: nothing to suggest.
+  assert.equal(suggestRanges(now - day / 2, from, now), '')
+  assert.equal(suggestRanges(null, from, now), '')
+
+  // 3 days: every wider preset reaches it.
+  assert.equal(suggestRanges(now - 3 * day, from, now), ' — try 7D, 30D or 90D')
+
+  // 12 days: 7D must NOT be offered — it would be empty too. This is the bug
+  // the dashboard showed: "Newest recorded call: 12d ago — try 7D or 30D".
+  const twelve = suggestRanges(now - 12 * day, from, now)
+  assert.equal(twelve, ' — try 30D or 90D')
+  assert.doesNotMatch(twelve, /7D/)
+
+  assert.equal(suggestRanges(now - 45 * day, from, now), ' — try 90D')
+
+  // Beyond every preset, only a custom range reaches it.
+  assert.match(suggestRanges(now - 200 * day, from, now), /older than 90D, so use Custom/)
 })
