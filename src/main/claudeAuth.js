@@ -33,8 +33,17 @@ export function cliCandidates(platform = process.platform, home = os.homedir(), 
     // Native installer, then npm -g, then the Programs dir.
     out.push(join(home, '.local', 'bin', 'claude.exe'))
     out.push(join(home, '.local', 'bin', 'claude.cmd'))
-    if (env.APPDATA) out.push(join(env.APPDATA, 'npm', 'claude.cmd'))
+    // npm's global shim directory is created by the first -g install, so any
+    // process started before that — a shell OR this app — has a stale PATH and
+    // `where claude` finds nothing. Look in the directory directly. .cmd and
+    // .exe come first because those are the forms `cmd /k` can actually run.
+    if (env.APPDATA) {
+      for (const name of ['claude.cmd', 'claude.exe', 'claude.ps1', 'claude']) {
+        out.push(join(env.APPDATA, 'npm', name))
+      }
+    }
     if (env.LOCALAPPDATA) out.push(join(env.LOCALAPPDATA, 'Programs', 'claude', 'claude.exe'))
+    if (env.ProgramFiles) out.push(join(env.ProgramFiles, 'nodejs', 'claude.cmd'))
   } else {
     out.push(join(home, '.local', 'bin', 'claude'))
     out.push('/usr/local/bin/claude')

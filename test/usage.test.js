@@ -423,3 +423,20 @@ test('CLI candidates use the target platform separators, not the host OS', () =>
     assert.ok(!p.includes('/'), `win32 candidate carries a forward slash: ${p}`)
   }
 })
+
+test('Windows lookup covers npm global shims, which a stale PATH misses', () => {
+  const win = cliCandidates('win32', 'C:\\Users\\FrankDiaz', {
+    APPDATA: 'C:\\Users\\FrankDiaz\\AppData\\Roaming',
+    ProgramFiles: 'C:\\Program Files'
+  })
+  const npmDir = 'C:\\Users\\FrankDiaz\\AppData\\Roaming\\npm\\'
+  // `npm install -g` writes claude, claude.cmd and claude.ps1 here. A shell or
+  // app started before that install never sees the directory on PATH, so
+  // `where claude` fails and only a direct check finds it.
+  assert.ok(win.includes(npmDir + 'claude.cmd'))
+  assert.ok(win.includes(npmDir + 'claude.ps1'))
+  assert.ok(win.includes(npmDir + 'claude'))
+  // .cmd must be preferred over .ps1: `cmd /k` cannot run a PowerShell script.
+  assert.ok(win.indexOf(npmDir + 'claude.cmd') < win.indexOf(npmDir + 'claude.ps1'))
+  assert.ok(win.includes('C:\\Program Files\\nodejs\\claude.cmd'))
+})

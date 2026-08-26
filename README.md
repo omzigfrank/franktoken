@@ -117,8 +117,10 @@ builds installers as downloadable artifacts without creating a release.
 ## Turn on live account-wide limits
 
 Open **Settings → Connect Claude**. The panel reports what is missing and fixes it in place:
-it locates the Claude Code CLI, opens a terminal running it so you can `/login`, and then shows
-which credential it is reading and when that credential expires. If no token is found it lists
+it locates the Claude Code CLI, opens a terminal running it, and then shows which credential it is
+reading and when that credential expires. `/login` is typed at **Claude's own prompt** inside that
+terminal — it is not a shell command, and `claude /login` is not one either. If the CLI was just
+installed, note that any terminal opened beforehand still has the old `PATH`, so use a new one. If no token is found it lists
 the exact paths it checked, so "never signed in here" is distinguishable from a permission error
 or a half-written file.
 
