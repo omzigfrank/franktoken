@@ -11,12 +11,13 @@ import {
   credentialHint,
   authStatus,
   setManualToken,
-  probeUsage
+  probeUsage,
+  emptyRangeMessage
 } from '../src/main/providers/claude.js'
 import { cliCandidates, loginCommand, linuxTerminal } from '../src/main/claudeAuth.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
 import { estimateTextTokens, chatgptConversationEvents } from '../src/main/providers/chatgpt.js'
-import { summarize, priceFor, PRICING } from '../src/main/providers/util.js'
+import { summarize, priceFor, PRICING, resolvePreset, RANGE_PRESETS, normalizeRange } from '../src/main/providers/util.js'
 import { buildSessions } from '../src/main/providers/sessions.js'
 import { mergeSnapshots } from '../src/main/providers/hub.js'
 
@@ -439,4 +440,163 @@ test('Windows lookup covers npm global shims, which a stale PATH misses', () => 
   // .cmd must be preferred over .ps1: `cmd /k` cannot run a PowerShell script.
   assert.ok(win.indexOf(npmDir + 'claude.cmd') < win.indexOf(npmDir + 'claude.ps1'))
   assert.ok(win.includes('C:\\Program Files\\nodejs\\claude.cmd'))
+})
+
+// --- range presets and interval reliability ------------------------------ //
+
+test('every range preset resolves to the span it advertises', () => {
+  const now = Date.parse('2026-08-26T19:00:00Z')
+  const day = 86_400_000
+  for (const [preset, days] of Object.entries(RANGE_PRESETS)) {
+    const r = resolvePreset({ preset }, now)
+    assert.equal(r.to, now, `${preset} must end at now`)
+    assert.equal(r.from, now - days * day, `${preset} must span ${days} days`)
+  }
+  // An unknown preset must not produce NaN bounds — that would filter out
+  // every event and render as "no data" rather than as a bug.
+  const bogus = resolvePreset({ preset: '12h' }, now)
+  assert.equal(bogus.from, now - 30 * day)
+  assert.ok(Number.isFinite(bogus.from) && Number.isFinite(bogus.to))
+
+  const custom = resolvePreset({ preset: 'custom', from: 100, to: 200 }, now)
+  assert.deepEqual(custom, { from: 100, to: 200, granularity: 'auto' })
+  // Custom with holes falls back rather than emitting null bounds.
+  assert.equal(resolvePreset({ preset: 'custom' }, now).to, now)
+})
+
+test('auto granularity switches to hourly only for short ranges', () => {
+  const now = Date.parse('2026-08-26T19:00:00Z')
+  assert.equal(normalizeRange(resolvePreset({ preset: '24h' }, now)).granularity, 'hour')
+  assert.equal(normalizeRange(resolvePreset({ preset: '7d' }, now)).granularity, 'day')
+  assert.equal(normalizeRange(resolvePreset({ preset: '30d' }, now)).granularity, 'day')
+  assert.equal(normalizeRange(resolvePreset({ preset: '90d' }, now)).granularity, 'day')
+})
+
+test('each preset aggregates exactly the events inside it', () => {
+  const now = Date.parse('2026-08-26T19:00:00Z')
+  const hour = 3_600_000
+  const day = 86_400_000
+  // One event per age band, each with a distinct token count so the totals
+  // identify precisely which ones were counted.
+  const ages = [
+    { label: '30m', ts: now - hour / 2, total: 1 },
+    { label: '20h', ts: now - 20 * hour, total: 2 },
+    { label: '3d', ts: now - 3 * day, total: 4 },
+    { label: '20d', ts: now - 20 * day, total: 8 },
+    { label: '60d', ts: now - 60 * day, total: 16 },
+    { label: '200d', ts: now - 200 * day, total: 32 }
+  ]
+  const events = ages.map((a, i) => ({
+    ts: a.ts,
+    sessionId: `s${i}`,
+    model: 'claude-opus-5',
+    input: a.total,
+    cachedInput: 0,
+    cacheWrite: 0,
+    output: 0,
+    reasoning: 0,
+    total: a.total,
+    usd: a.total / 1000
+  }))
+
+  // Sums are powers of two, so the expected value is a bitmask of which bands
+  // belong to each preset — an off-by-one in the bounds changes the number.
+  const expected = { '24h': 1 + 2, '7d': 1 + 2 + 4, '30d': 1 + 2 + 4 + 8, '90d': 1 + 2 + 4 + 8 + 16 }
+  for (const [preset, total] of Object.entries(expected)) {
+    const range = resolvePreset({ preset }, now)
+    const s = summarize(events, range)
+    assert.equal(s.tokens.total, total, `${preset} token total`)
+    // buildSessions must agree with summarize about what is in range, or the
+    // session list and the KPI tiles contradict each other.
+    const sessions = buildSessions(events, normalizeRange(range), { provider: 'claude' })
+    assert.equal(
+      sessions.reduce((m, x) => m + x.tokens.total, 0),
+      total,
+      `${preset} session total`
+    )
+  }
+})
+
+test('range bounds are inclusive at both ends, and identically so in both aggregators', () => {
+  const from = Date.parse('2026-08-01T00:00:00Z')
+  const to = Date.parse('2026-08-31T00:00:00Z')
+  const mk = (ts, total) => ({
+    ts, sessionId: `s${ts}`, model: 'claude-opus-5',
+    input: total, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total, usd: 0
+  })
+  const events = [mk(from - 1, 100), mk(from, 1), mk(to, 2), mk(to + 1, 200)]
+  const range = { from, to, granularity: 'day' }
+
+  // Exactly the two boundary events count; neither neighbour leaks in.
+  assert.equal(summarize(events, range).tokens.total, 3)
+  const sessions = buildSessions(events, range, { provider: 'claude' })
+  assert.equal(sessions.reduce((m, s) => m + s.tokens.total, 0), 3)
+  assert.equal(sessions.length, 2)
+})
+
+test('history file window is wide enough for every preset', () => {
+  const now = Date.parse('2026-08-26T19:00:00Z')
+  const day = 86_400_000
+  // A transcript's mtime is always >= its newest event, so selecting files by
+  // mtime is sound — but only if the window the provider computes covers the
+  // whole range. This is that arithmetic, mirrored from the provider.
+  const windowDays = (range) => Math.max(2, Math.ceil((now - range.from) / day) + 1)
+  for (const [preset, days] of Object.entries(RANGE_PRESETS)) {
+    const range = resolvePreset({ preset }, now)
+    const w = windowDays(range)
+    assert.ok(w >= days, `${preset}: window ${w}d must cover ${days}d`)
+    // A file whose newest event sits at the far edge of the range must survive.
+    const edgeFile = { path: 'edge.jsonl', mtimeMs: range.from }
+    assert.deepEqual(selectClaudeHistoryFiles([edgeFile], w, now), [edgeFile], `${preset} edge file`)
+  }
+})
+
+test('the empty-range explanation never claims more than was actually scanned', () => {
+  const now = Date.parse('2026-08-26T19:00:00Z')
+  const day = 86_400_000
+
+  // No transcripts at all.
+  assert.match(emptyRangeMessage({ totalFiles: 0, now }), /No local Claude sessions found/)
+
+  // Data in range needs no explanation.
+  assert.equal(emptyRangeMessage({ totalFiles: 5, sessionsInRange: 2, now }), null)
+
+  // Everything scanned, nothing recorded a model call: the /login case. Safe to
+  // say so, and widening the range would not help — so it must not suggest it.
+  const loginOnly = emptyRangeMessage({ totalFiles: 1, scannedFiles: 1, usageRows: 0, now })
+  assert.match(loginOnly, /none records a model call yet/)
+  assert.doesNotMatch(loginOnly, /7D or 30D/)
+
+  // Only some files scanned: the claim must be scoped to those, and it must
+  // point at the wider range that would actually surface the older calls.
+  const partial = emptyRangeMessage({ totalFiles: 70, scannedFiles: 1, usageRows: 0, now })
+  assert.match(partial, /in the 1 transcript active in this range/)
+  assert.match(partial, /69 older transcripts not scanned/)
+  assert.match(partial, /try 7D or 30D/)
+  // Regression: `files.length` once counted the characters of a label string,
+  // yielding "19 transcripts" and "-17 older" from two files.
+  assert.doesNotMatch(partial, /-\d/)
+
+  // Calls exist but all predate the range: report the newest one's real age.
+  const stale = emptyRangeMessage({
+    totalFiles: 70, scannedFiles: 70, usageRows: 40,
+    newestEventAt: now - 3 * day, from: now - day, now
+  })
+  assert.match(stale, /Newest recorded call: 3d ago/)
+  assert.match(stale, /try 7D or 30D/)
+
+  // Hours, not days, for a recent one — and no "try wider" when it is already
+  // inside the range.
+  const recent = emptyRangeMessage({
+    totalFiles: 2, scannedFiles: 2, usageRows: 3,
+    newestEventAt: now - 5 * 3_600_000, from: now - day, now
+  })
+  assert.match(recent, /Newest recorded call: 5h ago/)
+  assert.doesNotMatch(recent, /try 7D or 30D/)
+
+  // Undated rows are disclosed rather than silently mis-bucketed.
+  assert.match(
+    emptyRangeMessage({ totalFiles: 1, scannedFiles: 1, usageRows: 0, undatedRows: 4, now }),
+    /4 usage rows had no readable timestamp/
+  )
 })

@@ -71,6 +71,30 @@ export function dayKey(ms) {
   return `${y}-${m}-${day}`
 }
 
+/** Days spanned by each range preset the UI offers. */
+export const RANGE_PRESETS = { '24h': 1, '7d': 7, '30d': 30, '90d': 90 }
+
+/**
+ * Resolve a stored range spec {preset, from, to, granularity} into concrete
+ * {from, to, granularity} epoch ms. Lives here rather than in the Electron
+ * main process so the preset arithmetic every chart depends on is testable.
+ */
+export function resolvePreset(spec, now = Date.now()) {
+  const r = spec || { preset: '30d' }
+  const granularity = r.granularity || 'auto'
+  if (r.preset && r.preset !== 'custom') {
+    // An unrecognized preset falls back to 30d rather than producing NaN
+    // bounds, which would silently filter out every event.
+    const days = RANGE_PRESETS[r.preset] || RANGE_PRESETS['30d']
+    return { from: now - days * 86_400_000, to: now, granularity }
+  }
+  return {
+    from: r.from ?? now - RANGE_PRESETS['30d'] * 86_400_000,
+    to: r.to ?? now,
+    granularity
+  }
+}
+
 /** Normalize a range. {from,to} epoch ms; granularity 'hour'|'day'|'auto'. */
 export function normalizeRange(range) {
   const to = range?.to ?? Date.now()
