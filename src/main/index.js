@@ -13,7 +13,7 @@ import {
   restoreLiveCache
 } from './providers/claude.js'
 import { resolvePreset } from './providers/util.js'
-import { addSample, summarizeHistory } from './limitHistory.js'
+import { addSample, summarizeHistory, pruneHistory } from './limitHistory.js'
 import { connectStatus, launchLogin, saveManualToken } from './claudeAuth.js'
 import { IMPORT_ROOT } from './providers/chatgpt.js'
 import { buildReportHtml } from './report.js'
@@ -57,6 +57,10 @@ let tray = null
 let win = null
 let pollTimer = null
 let lastSnapshots = []
+// Account-wide limit history, loaded once and written only when a new API
+// response arrives (see poll()).
+let limitHistory = null
+let lastLimitSampleAt = 0
 
 // Register/unregister auto-launch on login, starting hidden in the background.
 function setLogin(enabled) {
@@ -225,16 +229,32 @@ async function poll() {
     const live = snapshotLiveCache()
     if (live) store.set('claudeLiveCache', live)
 
-    // Record the account-wide windows every poll, then hand the derived
-    // statistics back on the snapshot. Sampling is driven by real live data
-    // only: addSample ignores estimated windows, so a rate-limited or
-    // signed-out period leaves a gap rather than a false flat line.
+    // Record the account-wide windows, but only when the API actually returned
+    // something new. This loop runs every few seconds while the usage API is
+    // called every 90s, so sampling per poll stored ~18 duplicates a minute and
+    // rewrote the whole history to disk each time. Stamp each sample with the
+    // API's own timestamp so the series reflects when the data was produced.
+    // Derived stats are recomputed every poll — that is in-memory and cheap.
     const claude = lastSnapshots.find((s) => s.id === 'claude')
     if (claude?.windows?.length) {
-      const history = addSample(store.get('claudeLimitHistory'), claude.windows)
-      store.set('claudeLimitHistory', history)
-      claude.limitStats = summarizeHistory(history, claude.windows)
-      claude.limitSamples = history.length
+      if (limitHistory === null) {
+        // Prune on load: an install upgrading from a version that sampled per
+        // poll can arrive with thousands of near-identical samples. Write the
+        // cleaned history straight back so the bloat does not persist.
+        const stored = store.get('claudeLimitHistory') || []
+        limitHistory = pruneHistory(stored)
+        if (limitHistory.length !== stored.length) store.set('claudeLimitHistory', limitHistory)
+      }
+      if (claude.windowsAt && claude.windowsAt !== lastLimitSampleAt) {
+        lastLimitSampleAt = claude.windowsAt
+        const next = addSample(limitHistory, claude.windows, claude.windowsAt)
+        if (next.length !== limitHistory.length) {
+          limitHistory = next
+          store.set('claudeLimitHistory', limitHistory)
+        }
+      }
+      claude.limitStats = summarizeHistory(limitHistory, claude.windows)
+      claude.limitSamples = limitHistory.length
     }
     updateTray(lastSnapshots)
     if (win && !win.isDestroyed()) {

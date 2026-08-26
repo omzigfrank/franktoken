@@ -888,6 +888,10 @@ export default {
 
     if (live?.ok && live.windows?.length) {
       base.windows = live.windows
+      // When the API actually produced these numbers. The poll loop runs far
+      // more often than the API is called, so consumers need this to avoid
+      // recording the same response over and over.
+      base.windowsAt = live.at || now
       if (live.extra && live.extra.is_enabled && live.extra.monthly_limit) {
         base.extraUsage = {
           usedCredits: live.extra.used_credits || 0,

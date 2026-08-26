@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import Overview from './components/Overview.jsx'
 import ProviderView from './components/ProviderView.jsx'
 import SessionExplorer from './components/SessionExplorer.jsx'
@@ -73,13 +74,17 @@ export default function App() {
         </aside>
 
         <main className="main">
-          {view === 'overview' && <Overview snapshots={snapshots} sessions={sessions} onPick={setView} rangeLbl={label} />}
-          {view === 'sessions' && <SessionExplorer sessions={sessions} />}
-          {view === 'compare' && <ModelCompare sessions={sessions} />}
-          {view === 'sources' && <Sources snapshots={snapshots} sessions={sessions} />}
-          {view === 'settings' && <Settings settings={settings} onChange={changeSettings} />}
-          {snapshots.filter((snapshot) => snapshot.id === view).map((snapshot) => <ProviderView key={snapshot.id} s={snapshot} rangeLbl={label} />)}
-          {!snapshots.length && view === 'overview' && <div className="empty-state">Building the intelligence fabric…</div>}
+          {/* Keyed per view so a crash in one does not poison the others, and
+              switching views clears the boundary rather than sticking. */}
+          <ErrorBoundary key={view} label={view}>
+            {view === 'overview' && <Overview snapshots={snapshots} sessions={sessions} onPick={setView} rangeLbl={label} />}
+            {view === 'sessions' && <SessionExplorer sessions={sessions} />}
+            {view === 'compare' && <ModelCompare sessions={sessions} />}
+            {view === 'sources' && <Sources snapshots={snapshots} sessions={sessions} />}
+            {view === 'settings' && <Settings settings={settings} onChange={changeSettings} />}
+            {snapshots.filter((snapshot) => snapshot.id === view).map((snapshot) => <ProviderView key={snapshot.id} s={snapshot} rangeLbl={label} />)}
+            {!snapshots.length && view === 'overview' && <div className="empty-state">Building the intelligence fabric…</div>}
+          </ErrorBoundary>
         </main>
       </div>
     </div>

@@ -30,6 +30,11 @@ export function buildReportHtml({ snapshots, range, generatedAt = Date.now(), ti
       error: s.error || null,
       windows: s.windows || [],
       windowsNote: s.windowsNote || null,
+      // Account-wide burn rate / projection / trend. For a machine whose local
+      // transcripts are empty this is the only substantive data in the report,
+      // so exporting without it made the shared view far thinner than the app.
+      limitStats: s.limitStats || {},
+      limitSamples: s.limitSamples || 0,
       tokens: s.tokens,
       cost: s.cost,
       series: s.series,
@@ -90,6 +95,7 @@ export function buildReportHtml({ snapshots, range, generatedAt = Date.now(), ti
   .dotkey { display: inline-block; width: 9px; height: 9px; border-radius: 3px; }
   .linekey { display: inline-block; width: 14px; height: 2px; border-radius: 2px; vertical-align: 3px; }
   .meter { margin: 10px 0; }
+  .wspark { width: 100%; height: 30px; display: block; margin-top: 6px; }
   .meter .row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
   .meter .row .name { color: var(--ink-2); }
   .meter .row .val { font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -391,6 +397,24 @@ function renderOverview() {
   })), { area: true, fmt: fmtUsd, xLabel: (k) => k.slice(5) });
   grid.appendChild(c2);
 
+  // Percentage trend for one window. Scaled 0-100, not to the series maximum,
+  // so windows stay comparable and a steady 54% does not look full.
+  function spark(series, color) {
+    const W = 240, H = 30;
+    const ts = series.map((x) => x.t);
+    const t0 = Math.min(...ts), t1 = Math.max(...ts);
+    const span = (t1 - t0) || 1;
+    const pts = series.map((x) => {
+      const px = ((x.t - t0) / span) * W;
+      const py = H - (Math.max(0, Math.min(100, x.pct)) / 100) * (H - 3) - 1.5;
+      return px.toFixed(1) + ',' + py.toFixed(1);
+    }).join(' ');
+    const svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none', class: 'wspark' });
+    svg.appendChild(svgEl('polygon', { points: '0,' + H + ' ' + pts + ' ' + W + ',' + H, fill: color, opacity: '0.14' }));
+    svg.appendChild(svgEl('polyline', { points: pts, fill: 'none', stroke: color, 'stroke-width': '1.5' }));
+    return svg;
+  }
+
   for (const p of provs) {
     if (!p.windows?.length) continue;
     const c = card(p.name + ' — live rate-limit windows');
@@ -407,10 +431,39 @@ function renderOverview() {
       f.style.width = pct + '%';
       f.style.background = pct >= 90 ? 'var(--bad)' : pct >= 70 ? 'var(--warn)' : p.color;
       tr.appendChild(f); m.appendChild(tr);
-      if (w.resetsAt) m.appendChild(el('div', 'sub', 'resets ' + fmtTime(w.resetsAt)));
+      var meta = [];
+      if (w.resetsAt) meta.push('resets ' + fmtTime(w.resetsAt));
+      if (w.usedTokens != null) {
+        meta.push(fmtTok(w.usedTokens) + (w.budgetTokens != null ? ' / ' + fmtTok(w.budgetTokens) : '') + ' tok');
+      }
+      if (meta.length) m.appendChild(el('div', 'sub', meta.join(' · ')));
+
+      // Burn rate and projection, derived from the exporting machine's recorded
+      // history of this account-wide window.
+      var st = (p.limitStats || {})[w.id] || {};
+      if (st.rate) {
+        var v = Math.abs(st.rate.perHour);
+        var span = Math.round((st.rate.spanMs || 0) / 60000);
+        var rateText = v < 0.05
+          ? 'flat over ' + span + 'm'
+          : (st.rate.perHour > 0 ? '+' : '\u2212') + (v < 1 ? v.toFixed(2) : v.toFixed(1)) + ' pts/hr over ' + span + 'm';
+        var line = rateText;
+        if (st.projection) {
+          var h = st.projection.hoursLeft;
+          line += ' \u00b7 100% in ' + (h < 1 ? Math.round(h * 60) + 'm' : h < 48 ? h.toFixed(1) + 'h' : Math.round(h / 24) + 'd');
+          if (st.projection.beforeReset != null) {
+            line += st.projection.beforeReset ? ' (before reset)' : ' (resets first)';
+          }
+        }
+        m.appendChild(el('div', 'sub', line));
+      }
+      if (st.series && st.series.length > 1) m.appendChild(spark(st.series, p.color));
       c.appendChild(m);
     }
-    if (p.windowsNote) c.appendChild(el('div', 'sub', '⚠ ' + p.windowsNote));
+    if (p.limitSamples > 1) {
+      c.appendChild(el('div', 'sub', 'Trend and burn rate from ' + p.limitSamples + ' recorded samples.'));
+    }
+    if (p.windowsNote) c.appendChild(el('div', 'sub', '\u26a0 ' + p.windowsNote));
     grid.appendChild(c);
   }
   view.appendChild(grid);

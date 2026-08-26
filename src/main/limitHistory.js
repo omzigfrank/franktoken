@@ -14,7 +14,8 @@
 // detection and projection maths are testable without waiting for real hours
 // to pass.
 
-const MINUTE = 60_000
+const SECOND = 1_000
+const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 
@@ -32,6 +33,13 @@ export const MAX_AGE_MS = 30 * DAY
 // enough data yet" forever. This threshold sits well above that jitter and well
 // below the smallest real window.
 export const ROLLOVER_JUMP_MS = 30 * MINUTE
+
+// Minimum spacing between stored samples. The dashboard polls every few
+// seconds while the usage API is only called every 90s, so a naive caller
+// records the same cached response ~18 times a minute and rewrites the whole
+// store each time. Callers should pass the API's own timestamp; this is the
+// backstop for when they don't.
+export const MIN_SAMPLE_GAP_MS = 30 * SECOND
 
 /** Compact one live-window array into a single history sample. */
 export function toSample(windows, now = Date.now()) {
@@ -62,17 +70,24 @@ export function pruneHistory(history, now = Date.now()) {
   const out = []
   const seenBuckets = new Set()
   // Walk newest-first so each coarse bucket keeps its most recent sample.
+  let lastKept = Number.POSITIVE_INFINITY
   for (let i = history.length - 1; i >= 0; i--) {
     const s = history[i]
     if (!s?.at || s.at < cutoff) continue
     if (s.at >= fullFrom) {
+      // Thin runs denser than the minimum gap. Earlier versions sampled once
+      // per poll instead of once per API response, so an upgrading install can
+      // arrive with thousands of near-identical samples; this cleans them.
+      if (lastKept - s.at < MIN_SAMPLE_GAP_MS) continue
       out.push(s)
+      lastKept = s.at
       continue
     }
     const bucket = Math.floor(s.at / COARSE_BUCKET_MS)
     if (seenBuckets.has(bucket)) continue
     seenBuckets.add(bucket)
     out.push(s)
+    lastKept = s.at
   }
   return out.reverse()
 }
@@ -82,9 +97,10 @@ export function addSample(history, windows, now = Date.now()) {
   const sample = toSample(windows, now)
   const base = Array.isArray(history) ? history : []
   if (!sample) return pruneHistory(base, now)
-  // Guard against clock jumps or duplicate polls landing on the same instant.
+  // Guard against clock jumps, duplicate polls landing on the same instant,
+  // and samples arriving faster than the data behind them actually changes.
   const last = base[base.length - 1]
-  if (last && sample.at <= last.at) return pruneHistory(base, now)
+  if (last && sample.at - last.at < MIN_SAMPLE_GAP_MS) return pruneHistory(base, now)
   return pruneHistory([...base, sample], now)
 }
 
@@ -167,16 +183,26 @@ export function projectExhaustion(window, rate, now = Date.now()) {
   }
 }
 
-/** Charting series for one window: [{ t, pct }], oldest first. */
-export function seriesFor(history, id, sinceMs = 0, now = Date.now()) {
+// A sparkline a few hundred pixels wide cannot show more than a few hundred
+// points, and every point crosses the IPC boundary each poll.
+export const MAX_SERIES_POINTS = 240
+
+/** Charting series for one window: [{ t, pct }], oldest first, evenly thinned. */
+export function seriesFor(history, id, sinceMs = 0, now = Date.now(), maxPoints = MAX_SERIES_POINTS) {
   const from = sinceMs ? now - sinceMs : 0
-  const out = []
+  const all = []
   for (const s of Array.isArray(history) ? history : []) {
     const entry = s?.w?.[id]
     if (!entry || entry.pct == null || !s.at || s.at < from) continue
-    out.push({ t: s.at, pct: Number(entry.pct), used: entry.used ?? null })
+    all.push({ t: s.at, pct: Number(entry.pct), used: entry.used ?? null })
   }
-  return out
+  if (!maxPoints || all.length <= maxPoints) return all
+  // Stride, but always keep the newest point so the line ends at "now".
+  const stride = Math.ceil(all.length / maxPoints)
+  const thinned = all.filter((_, i) => i % stride === 0)
+  const last = all[all.length - 1]
+  if (thinned[thinned.length - 1] !== last) thinned.push(last)
+  return thinned
 }
 
 /** Window ids present anywhere in the history, most recently seen first. */

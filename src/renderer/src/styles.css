@@ -242,3 +242,13 @@ button { color: inherit; }
 .aw-stats .aw-warn b { color: #ffb3c6; }
 .aw-stats .aw-ok b { color: #bdf5a8; }
 .aw-stale { padding: 9px 12px; border: 1px solid rgba(247,185,85,.28); border-radius: 9px; background: rgba(247,185,85,.07); color: #fbd899; font-size: 10.5px; line-height: 1.55; }
+
+/* Renderer crash fallback — a blank window is the worst failure for a packaged app */
+.crash { display: grid; place-items: start center; padding: 30px 8px; }
+.crash-card { display: grid; gap: 11px; max-width: 760px; width: 100%; padding: 20px; border: 1px solid rgba(255,107,154,.32); border-radius: 14px; background: rgba(255,107,154,.06); }
+.crash-card span { color: #ff9fbb; font-size: 9px; font-weight: 850; letter-spacing: 1.6px; text-transform: uppercase; }
+.crash-card h2 { margin: 0; font-size: 19px; letter-spacing: -.3px; }
+.crash-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.crash-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.crash-actions .rp-apply { padding: 8px 15px; font-size: 11px; }
+.crash-detail { margin: 4px 0 0; padding: 11px; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; background: #0b0f18; color: #9aa6bd; font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
