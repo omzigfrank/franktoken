@@ -24,6 +24,18 @@ import { estimateTextTokens, chatgptConversationEvents } from '../src/main/provi
 import { summarize, priceFor, PRICING, resolvePreset, RANGE_PRESETS, normalizeRange } from '../src/main/providers/util.js'
 import { buildSessions } from '../src/main/providers/sessions.js'
 import { mergeSnapshots } from '../src/main/providers/hub.js'
+import {
+  toSample,
+  pruneHistory,
+  addSample,
+  currentSegment,
+  burnRate,
+  projectExhaustion,
+  summarizeHistory,
+  knownWindows,
+  FULL_RESOLUTION_MS,
+  COARSE_BUCKET_MS
+} from '../src/main/limitHistory.js'
 
 test('Claude usage keeps one complete snapshot per message id', () => {
   const partial = claudeUsageEvent({
@@ -672,4 +684,145 @@ test('persisted live windows are restored only while still plausible', () => {
   assert.equal(restoreLiveCache(null, now), false)
   assert.equal(restoreLiveCache({ windows: [], at: now }, now), false)
   assert.equal(restoreLiveCache({ windows: saved.windows }, now), false)
+})
+
+// --- account-wide limit history ------------------------------------------ //
+
+test('samples skip estimated windows so the series has no false zeros', () => {
+  const now = Date.parse('2026-08-26T20:00:00Z')
+  const s = toSample(
+    [
+      { id: 'five_hour', usedPercent: 13, usedTokens: 1_200_000, budgetTokens: 12_000_000, resetsAt: now + 3 * 3_600_000 },
+      // Estimated windows carry no real percentage; recording them would look
+      // like account usage collapsing to zero.
+      { id: 'seven_day', usedPercent: null, estimated: true, usedTokens: 187_000_000 }
+    ],
+    now
+  )
+  assert.deepEqual(Object.keys(s.w), ['five_hour'])
+  assert.equal(s.w.five_hour.pct, 13)
+  assert.equal(s.w.five_hour.used, 1_200_000)
+  assert.equal(s.at, now)
+
+  // Nothing live at all produces no sample rather than an empty one.
+  assert.equal(toSample([{ id: 'x', estimated: true, usedPercent: null }], now), null)
+  assert.equal(toSample([], now), null)
+  assert.equal(toSample(null, now), null)
+})
+
+test('history keeps recent samples in full and thins the tail', () => {
+  const now = Date.parse('2026-08-26T20:00:00Z')
+  const mk = (at, pct) => ({ at, w: { five_hour: { pct } } })
+  const history = []
+  // Two days of samples every 5 minutes.
+  for (let t = now - 2 * 86_400_000; t <= now; t += 5 * 60_000) history.push(mk(t, 1))
+
+  const pruned = pruneHistory(history, now)
+  const recent = pruned.filter((s) => s.at >= now - FULL_RESOLUTION_MS)
+  const older = pruned.filter((s) => s.at < now - FULL_RESOLUTION_MS)
+
+  // Recent window untouched: every 5-minute sample survives.
+  assert.equal(recent.length, history.filter((s) => s.at >= now - FULL_RESOLUTION_MS).length)
+  // Tail thinned to at most one per coarse bucket.
+  const buckets = new Set(older.map((s) => Math.floor(s.at / COARSE_BUCKET_MS)))
+  assert.equal(older.length, buckets.size)
+  assert.ok(older.length < history.length / 2, 'tail must actually shrink')
+  // Chronological order preserved, which the charts depend on.
+  for (let i = 1; i < pruned.length; i++) assert.ok(pruned[i].at > pruned[i - 1].at)
+
+  // Anything past the retention horizon is dropped outright.
+  const ancient = pruneHistory([mk(now - 40 * 86_400_000, 5), mk(now, 5)], now)
+  assert.equal(ancient.length, 1)
+})
+
+test('addSample never mutates its input and ignores clock regressions', () => {
+  const now = Date.parse('2026-08-26T20:00:00Z')
+  const first = addSample([], [{ id: 'five_hour', usedPercent: 10 }], now)
+  assert.equal(first.length, 1)
+
+  const second = addSample(first, [{ id: 'five_hour', usedPercent: 12 }], now + 90_000)
+  assert.equal(second.length, 2)
+  assert.equal(first.length, 1, 'input array must not be mutated')
+
+  // A duplicate poll or a clock that jumped backwards must not corrupt order.
+  const same = addSample(second, [{ id: 'five_hour', usedPercent: 99 }], now + 90_000)
+  assert.equal(same.length, 2)
+  const backwards = addSample(second, [{ id: 'five_hour', usedPercent: 99 }], now - 5_000)
+  assert.equal(backwards.length, 2)
+})
+
+test('burn rate measures only within the current window, not across a reset', () => {
+  const now = Date.parse('2026-08-26T20:00:00Z')
+  const hour = 3_600_000
+  // Climbs to 80%, the window resets, then climbs again from 5%.
+  const history = [
+    { at: now - 6 * hour, w: { five_hour: { pct: 40, resetsAt: now - 4 * hour } } },
+    { at: now - 5 * hour, w: { five_hour: { pct: 80, resetsAt: now - 4 * hour } } },
+    { at: now - 3 * hour, w: { five_hour: { pct: 5, resetsAt: now + hour } } },
+    { at: now - 1 * hour, w: { five_hour: { pct: 25, resetsAt: now + hour } } }
+  ]
+
+  const segment = currentSegment(history, 'five_hour', now)
+  assert.equal(segment.length, 2, 'segment starts after the reset')
+  assert.equal(segment[0].pct, 5)
+
+  const rate = burnRate(history, 'five_hour', now, 4 * hour)
+  // 5% -> 25% across 2 hours = 10 points/hour. Measuring across the reset
+  // would have produced a negative rate and a nonsense projection.
+  assert.ok(rate)
+  assert.equal(Math.round(rate.perHour), 10)
+  assert.ok(rate.perHour > 0)
+
+  // Too little spread to be honest about.
+  const twoClose = [
+    { at: now - 60_000, w: { five_hour: { pct: 10 } } },
+    { at: now, w: { five_hour: { pct: 11 } } }
+  ]
+  assert.equal(burnRate(twoClose, 'five_hour', now), null)
+  assert.equal(burnRate([], 'five_hour', now), null)
+})
+
+test('projection says whether the cap arrives before the window resets', () => {
+  const now = Date.parse('2026-08-26T20:00:00Z')
+  const hour = 3_600_000
+
+  // 25% used, climbing 10 points/hour -> 100% in 7.5h.
+  const rate = { perHour: 10 }
+  const soon = projectExhaustion({ usedPercent: 25, resetsAt: now + 20 * hour }, rate, now)
+  assert.equal(Math.round(soon.hoursLeft * 10) / 10, 7.5)
+  assert.equal(soon.beforeReset, true)
+
+  // Same rate, but the window resets in 2h — the cap is not the real risk.
+  const safe = projectExhaustion({ usedPercent: 25, resetsAt: now + 2 * hour }, rate, now)
+  assert.equal(safe.beforeReset, false)
+
+  // Flat or falling usage must not produce an invented exhaustion time.
+  assert.equal(projectExhaustion({ usedPercent: 25 }, { perHour: 0 }, now), null)
+  assert.equal(projectExhaustion({ usedPercent: 25 }, { perHour: -3 }, now), null)
+  assert.equal(projectExhaustion({ usedPercent: 25 }, null, now), null)
+  assert.equal(projectExhaustion({ usedPercent: null }, rate, now), null)
+
+  // Already at the cap.
+  assert.equal(projectExhaustion({ usedPercent: 100, resetsAt: now + hour }, rate, now).hoursLeft, 0)
+})
+
+test('summarizeHistory produces series, rate and projection per window', () => {
+  const now = Date.parse('2026-08-26T20:00:00Z')
+  const hour = 3_600_000
+  const history = [
+    { at: now - 3 * hour, w: { five_hour: { pct: 5 }, seven_day: { pct: 40 } } },
+    { at: now - 1 * hour, w: { five_hour: { pct: 25 }, seven_day: { pct: 44 } } }
+  ]
+  const windows = [
+    { id: 'five_hour', usedPercent: 25, resetsAt: now + 4 * hour },
+    { id: 'seven_day', usedPercent: 44, resetsAt: now + 3 * 86_400_000 }
+  ]
+  const out = summarizeHistory(history, windows, now)
+
+  assert.equal(out.five_hour.series.length, 2)
+  assert.equal(Math.round(out.five_hour.rate.perHour), 10)
+  assert.equal(out.five_hour.projection.beforeReset, false, '100% is 7.5h out, reset is 4h out')
+  assert.equal(Math.round(out.seven_day.rate.perHour), 2)
+  assert.ok(out.seven_day.projection.hoursLeft > 24)
+  assert.deepEqual(knownWindows(history), ['five_hour', 'seven_day'])
 })

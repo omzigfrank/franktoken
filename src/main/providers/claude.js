@@ -299,6 +299,12 @@ export function limitsWindows(limits) {
     if (!l) continue
     const pct = l.percent ?? l.utilization ?? (l.used != null && l.limit ? (l.used / l.limit) * 100 : null)
     if (pct == null) continue
+    // When the API reports raw counts, keep them: an account-wide token total
+    // is live on every device, unlike the local-transcript figures. Previously
+    // these were read only to derive a percentage and then thrown away.
+    const usedTokens = numberOrNull(l.used ?? l.used_tokens ?? l.usage)
+    const budgetTokens = numberOrNull(l.limit ?? l.limit_tokens ?? l.max)
+    const counts = usedTokens == null && budgetTokens == null ? {} : { usedTokens, budgetTokens }
     const kind = String(l.kind || l.type || '')
     const group = String(l.group || '')
     const resetsAt = l.resets_at ? Date.parse(l.resets_at) : null
@@ -311,7 +317,8 @@ export function limitsWindows(limits) {
         usedPercent: Number(pct) || 0,
         windowMinutes: 300,
         resetsAt,
-        estimated: false
+        estimated: false,
+        ...counts
       })
     } else if (group === 'weekly' || kind.startsWith('weekly') || kind === 'seven_day') {
       out.push({
@@ -320,7 +327,8 @@ export function limitsWindows(limits) {
         usedPercent: Number(pct) || 0,
         windowMinutes: 10080,
         resetsAt,
-        estimated: false
+        estimated: false,
+        ...counts
       })
     } else if (group === 'monthly' || kind.startsWith('monthly')) {
       out.push({
@@ -329,7 +337,8 @@ export function limitsWindows(limits) {
         usedPercent: Number(pct) || 0,
         windowMinutes: 43200,
         resetsAt,
-        estimated: false
+        estimated: false,
+        ...counts
       })
     }
   }
@@ -549,6 +558,12 @@ async function fetchLiveWindows() {
 
 function emptyTokens() {
   return { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 }
+}
+
+function numberOrNull(value) {
+  if (value == null) return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
 }
 
 function tokenNumber(value) {

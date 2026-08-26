@@ -1,3 +1,4 @@
+import AccountWide from './AccountWide.jsx'
 import React from 'react'
 import { TokenArea } from './Charts.jsx'
 import { fmtAgo, fmtDuration, fmtTokens, fmtUsd } from '../format.js'
@@ -40,6 +41,9 @@ export default function Overview({ snapshots, sessions, onPick, rangeLbl = '30D'
           <div className="orbit-core"><span>{fmtTokens(totalTokens)}</span><small>TOKENS</small></div>
         </div>
       </section>
+
+      {snapshots.filter((s) => (s.windows || []).some((w) => !w.estimated && w.usedPercent != null))
+        .map((s) => <AccountWide key={s.id} snapshot={s} />)}
 
       <section className="kpi-strip">
         <div className="glass-card metric-card violet"><span>Token volume</span><strong>{fmtTokens(totalTokens)}</strong><small>input + cache + output</small><Delta>{requestCount} requests</Delta></div>
