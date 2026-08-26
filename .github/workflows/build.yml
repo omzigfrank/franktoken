@@ -1,18 +1,64 @@
 name: Build installers
 
 # Build Windows / macOS / Linux installers and attach them to a GitHub Release.
-# Trigger by pushing a tag like v0.1.0, or run manually from the Actions tab.
+#
+# Three ways to release, in order of convenience:
+#   1. Bump "version" in package.json and merge to main — this workflow notices
+#      there is no release for that version yet and publishes one, creating the
+#      tag itself. No local git tag needed.
+#   2. Push a tag like v0.3.0 directly.
+#   3. Actions -> Run workflow, with "publish_release" ticked.
+# Running manually with the box unticked just builds installers as downloadable
+# artifacts without touching releases.
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish a GitHub Release for package.json's version"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
+  # Resolve the target version and decide whether it still needs a release, so a
+  # routine push to main doesn't rebuild three platforms for nothing.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      needs_release: ${{ steps.check.outputs.needs_release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v$(node -p "require('./package.json').version")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$tag is already released."
+            echo "needs_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$tag has no release yet."
+            echo "needs_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: version
+    # Always build for a tag push or a manual run; on a main push only when the
+    # version is unreleased.
+    if: >-
+      github.ref_type == 'tag' ||
+      github.event_name == 'workflow_dispatch' ||
+      needs.version.outputs.needs_release == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +77,8 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Test
+        run: npm test
       - name: Build
         run: ${{ matrix.cmd }} -- --publish never
         env:
@@ -47,8 +95,11 @@ jobs:
           if-no-files-found: ignore
 
   release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [version, build]
+    if: >-
+      github.ref_type == 'tag' ||
+      (needs.version.outputs.needs_release == 'true' &&
+       (github.event_name == 'push' || github.event.inputs.publish_release == 'true'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -59,5 +110,9 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          # On a tag push honour the pushed tag; otherwise create the tag for
+          # package.json's version at this commit.
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: artifacts/**/*
           generate_release_notes: true
