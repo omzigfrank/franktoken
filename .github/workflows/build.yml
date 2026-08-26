@@ -43,13 +43,22 @@ jobs:
           set -euo pipefail
           tag="v$(node -p "require('./package.json').version")"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "$tag is already released."
-            echo "needs_release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "$tag has no release yet."
-            echo "needs_release=true" >> "$GITHUB_OUTPUT"
-          fi
+          # A DRAFT release counts as NOT released. Treating it as done would
+          # let one failed publish block that version from ever building again:
+          # v0.5.0 got stuck exactly this way when GitHub returned a 500 on the
+          # final draft->published flip, leaving a draft nobody could see.
+          draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo missing)
+          case "$draft" in
+            false)
+              echo "$tag is already published."
+              echo "needs_release=false" >> "$GITHUB_OUTPUT" ;;
+            true)
+              echo "$tag exists but is still a DRAFT — rebuilding to complete it."
+              echo "needs_release=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "$tag has no release yet."
+              echo "needs_release=true" >> "$GITHUB_OUTPUT" ;;
+          esac
 
   build:
     needs: version
@@ -152,3 +161,28 @@ jobs:
             artifacts/**/*
             SHA256SUMS.txt
           generate_release_notes: true
+      # A transient 500 during the final draft->published flip leaves the
+      # release invisible even though every asset uploaded. Publish it
+      # explicitly, with retries, so a GitHub blip cannot silently swallow a
+      # release.
+      - name: Ensure the release is published
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || needs.version.outputs.tag }}
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4 5; do
+            state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo missing)
+            case "$state" in
+              false) echo "$TAG is published."; exit 0 ;;
+              missing) echo "attempt $attempt: $TAG does not exist yet"; ;;
+              *) echo "attempt $attempt: $TAG is a draft — publishing"
+                 gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false || true ;;
+            esac
+            sleep $((attempt * 10))
+          done
+          state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo missing)
+          if [ "$state" = "false" ]; then echo "$TAG is published."; exit 0; fi
+          echo "::error::$TAG is still $state after 5 attempts"
+          exit 1
