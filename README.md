@@ -80,9 +80,9 @@ Download the installer for your platform from the [latest release](https://githu
 
 | Platform | File | Install |
 |---|---|---|
-| Windows | `FrankToken-<version>-win-x64.exe` | Run it. Installs per-user (no admin prompt) and adds Start Menu + desktop shortcuts. |
-| macOS (Apple Silicon) | `FrankToken-<version>-mac-arm64.dmg` | Open, drag to Applications. |
-| macOS (Intel) | `FrankToken-<version>-mac-x64.dmg` | Open, drag to Applications. |
+| Windows | `FrankToken-<version>-win32-x64.exe` | Run it. Installs per-user (no admin prompt) and adds Start Menu + desktop shortcuts. |
+| macOS (Apple Silicon) | `FrankToken-<version>-darwin-arm64.dmg` | Open, drag to Applications. |
+| macOS (Intel) | `FrankToken-<version>-darwin-x64.dmg` | Open, drag to Applications. |
 | Linux | `FrankToken-<version>-linux-x86_64.AppImage` | `chmod +x` it, then run. |
 
 FrankToken lives in your **system tray / menu bar** — after launching, click the tray icon to open the dashboard. It is not a taskbar app.
@@ -99,12 +99,17 @@ FrankToken lives in your **system tray / menu bar** — after launching, click t
   chmod +x FrankToken-*.AppImage && ./FrankToken-*.AppImage
   ```
 
-To cut a new release, push a version tag — CI builds all three platforms and attaches them to a GitHub Release:
+To cut a new release, bump the version and merge to `main` — CI notices there is no
+release for that version yet, builds all three platforms, and publishes the release
+(creating the tag itself):
 
 ```bash
-npm version patch      # or: minor / major — commits and tags
-git push origin main --follow-tags
+npm version patch      # or: minor / major
 ```
+
+Pushing a `v*` tag works too, as does **Actions → Build installers → Run workflow**
+with *"Publish a GitHub Release"* ticked. Running it with that box unticked just
+builds installers as downloadable artifacts without creating a release.
 
 ## Run from source
 
