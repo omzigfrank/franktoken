@@ -186,3 +186,39 @@ jobs:
           if [ "$state" = "false" ]; then echo "$TAG is published."; exit 0; fi
           echo "::error::$TAG is still $state after 5 attempts"
           exit 1
+      # Publishing is not the same as being complete. A transient 500 mid-upload
+      # can leave a published release missing an installer while SHA256SUMS
+      # still lists it — v0.5.2 shipped without its Linux AppImage exactly that
+      # way. Re-attach anything absent rather than leaving the release wrong.
+      - name: Verify every installer is attached
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || needs.version.outputs.tag }}
+        run: |
+          set -uo pipefail
+          attached() {
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              -q '.assets[].name' 2>/dev/null || true
+          }
+          missing=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            name=$(basename "$f")
+            for attempt in 1 2 3; do
+              if attached | grep -qxF "$name"; then break; fi
+              echo "attempt $attempt: $name not attached — uploading"
+              gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber || true
+              sleep $((attempt * 10))
+            done
+            if attached | grep -qxF "$name"; then
+              echo "ok: $name"
+            else
+              echo "::error::$name is still missing from $TAG"
+              missing=1
+            fi
+          done <<EOF
+          $(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' \) 2>/dev/null)
+          SHA256SUMS.txt
+          EOF
+          exit $missing
