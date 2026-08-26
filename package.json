@@ -13,10 +13,10 @@
     "hub": "node server/index.js",
     "hub:dev": "electron-vite build && node server/index.js",
     "start": "electron-vite preview",
-    "dist": "electron-vite build && electron-builder",
-    "dist:win": "electron-vite build && electron-builder --win",
-    "dist:mac": "electron-vite build && electron-builder --mac",
-    "dist:linux": "electron-vite build && electron-builder --linux"
+    "dist": "electron-vite build && electron-builder --config electron-builder.config.cjs",
+    "dist:win": "electron-vite build && electron-builder --win --config electron-builder.config.cjs",
+    "dist:mac": "electron-vite build && electron-builder --mac --config electron-builder.config.cjs",
+    "dist:linux": "electron-vite build && electron-builder --linux --config electron-builder.config.cjs"
   },
   "dependencies": {
     "electron-store": "^10.0.0",
