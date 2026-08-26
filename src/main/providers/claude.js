@@ -148,6 +148,8 @@ export function setManualToken(token) {
   liveCache = null
   lastFailure = null
   lastAttemptAt = 0
+  failStreak = 0
+  retryAfterAt = 0
   return !!manualToken
 }
 
@@ -416,8 +418,51 @@ export function authStatus() {
 let liveCache = null // { windows, extra, at }
 let lastAttemptAt = 0
 let lastFailure = null // { reason }
-const LIVE_TTL = 30_000 // serve cached without hitting the API for 30s
-const MIN_INTERVAL = 20_000 // never hit the API more than every 20s
+// The 5-hour and weekly windows move over hours, so polling the API every few
+// seconds buys nothing and earns a 429 — which then shows N/A and is strictly
+// worse than a value a minute old. Cadence is deliberately slow; the local
+// transcript watchers still refresh tokens/cost within seconds.
+const LIVE_TTL = 90_000 // serve cached without hitting the API for 90s
+const MIN_INTERVAL = 90_000 // never hit the API more than every 90s
+// Escalating cooldown after a rejection. Retrying a 429 on the normal interval
+// keeps the account rate-limited; waiting minutes costs almost nothing here.
+const BACKOFF_STEPS = [2 * 60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000]
+let failStreak = 0
+let retryAfterAt = 0 // absolute ms before which we must not call the API again
+
+/**
+ * How long to wait after a rejected live call. Honors a server-provided
+ * Retry-After (seconds) when present, otherwise escalates through
+ * BACKOFF_STEPS by consecutive-failure count.
+ */
+export function backoffDelay(streak, retryAfterSeconds = null) {
+  const seconds = Number(retryAfterSeconds)
+  if (Number.isFinite(seconds) && seconds > 0) {
+    // Trust the server, but never sleep longer than the largest step.
+    return Math.min(seconds * 1000, BACKOFF_STEPS[BACKOFF_STEPS.length - 1])
+  }
+  const i = Math.min(Math.max(streak, 1) - 1, BACKOFF_STEPS.length - 1)
+  return BACKOFF_STEPS[i]
+}
+
+// Last good windows, persisted by the main process so a restart that lands on
+// a 429 can still show the numbers from minutes ago instead of N/A. Older than
+// this and the percentages are too likely to have moved to be worth showing.
+const MAX_RESTORE_AGE = 30 * 60_000
+
+/** Serializable view of the last successful live response, or null. */
+export function snapshotLiveCache() {
+  if (!liveCache?.windows?.length || !liveCache.at) return null
+  return { windows: liveCache.windows, extra: liveCache.extra || null, at: liveCache.at }
+}
+
+/** Re-seed the cache at startup. Ignores anything too old to still be true. */
+export function restoreLiveCache(saved, now = Date.now()) {
+  if (!saved?.windows?.length || !saved.at) return false
+  if (now - saved.at > MAX_RESTORE_AGE) return false
+  liveCache = { windows: saved.windows, extra: saved.extra || null, at: saved.at }
+  return true
+}
 
 // Returns { ok, windows, extra, at, reason } — reason set when not ok.
 async function fetchLiveWindows() {
@@ -425,6 +470,13 @@ async function fetchLiveWindows() {
   // Serve fresh cache without calling the API (avoids triggering 429).
   if (liveCache && now - liveCache.at < LIVE_TTL) {
     return { ok: true, ...liveCache, cached: true }
+  }
+  // Hard cooldown from a previous rejection takes precedence: calling again
+  // before it expires is what keeps a 429 alive.
+  if (now < retryAfterAt) {
+    const reason = lastFailure?.reason || 'cooldown'
+    if (liveCache) return { ok: true, ...liveCache, stale: true, reason, retryAt: retryAfterAt }
+    return { ok: false, reason, retryAt: retryAfterAt }
   }
   // Backoff: don't retry too soon after any attempt.
   if (now - lastAttemptAt < MIN_INTERVAL) {
@@ -461,10 +513,16 @@ async function fetchLiveWindows() {
     if (!res.ok) {
       const reason = res.status === 429 ? 'rate-limited' : `http-${res.status}`
       lastFailure = { reason }
+      failStreak += 1
+      retryAfterAt = now + backoffDelay(failStreak, res.headers?.get?.('retry-after'))
       // keep showing last good data if we have it
-      return liveCache ? { ok: true, ...liveCache, stale: true, reason } : { ok: false, reason }
+      return liveCache
+        ? { ok: true, ...liveCache, stale: true, reason, retryAt: retryAfterAt }
+        : { ok: false, reason, retryAt: retryAfterAt }
     }
     lastFailure = null
+    failStreak = 0
+    retryAfterAt = 0
     const d = await res.json()
     // Prefer the newer limits[] array (carries per-model scoped windows);
     // fall back to the legacy top-level fields for older API responses.
@@ -481,7 +539,11 @@ async function fetchLiveWindows() {
     return { ok: true, ...liveCache }
   } catch {
     lastFailure = { reason: 'network' }
-    return liveCache ? { ok: true, ...liveCache, stale: true, reason: 'network' } : { ok: false, reason: 'network' }
+    failStreak += 1
+    retryAfterAt = now + backoffDelay(failStreak)
+    return liveCache
+      ? { ok: true, ...liveCache, stale: true, reason: 'network', retryAt: retryAfterAt }
+      : { ok: false, reason: 'network', retryAt: retryAfterAt }
   }
 }
 
@@ -797,11 +859,16 @@ export default {
 
     // Real plan-usage windows from the official API (cached, with backoff).
     const live = await fetchLiveWindows()
+    // Name the recovery time: "rate-limited" with no horizon reads as broken.
+    const retryIn =
+      live?.retryAt && live.retryAt > now
+        ? ` — retrying in ${Math.max(1, Math.round((live.retryAt - now) / 60_000))} min`
+        : ''
     const reasonText = {
-      'rate-limited': 'Live limits temporarily rate-limited',
+      'rate-limited': `Live limits rate-limited by the API${retryIn}`,
       'token-expired': 'OAuth token expired and auto-refresh failed — run `claude` and /login once',
       'no-token': `No Claude OAuth token found. ${credentialHint()}`,
-      network: 'Network unavailable'
+      network: `Network unavailable${retryIn}`
     }
 
     if (live?.ok && live.windows?.length) {
@@ -815,7 +882,8 @@ export default {
       }
       if (live.stale) {
         const ageMin = Math.round((Date.now() - live.at) / 60_000)
-        base.windowsNote = `${reasonText[live.reason] || 'Live update failed'} — showing last known limits (${ageMin}m ago).`
+        const why = (reasonText[live.reason] || 'Live update failed').replace(/[.\s]+$/, '')
+        base.windowsNote = `${why}. Showing last known limits (${ageMin}m ago).`
         base.windowsStale = true
       }
     } else {
@@ -826,8 +894,12 @@ export default {
         estimatedWindow('seven_day', 'Weekly Window', 10080, events, now)
       ]
       base.windowsEstimated = true
-      const why = reasonText[live?.reason] || 'Live limits unavailable'
-      base.windowsNote = `${why} Percentages need the live API — the figures below are only the tokens this device recorded in each window.`
+      const why = (reasonText[live?.reason] || 'Live limits unavailable').replace(/[.\s]+$/, '')
+      base.windowsNote =
+        `${why}. Percentages need the live API — the figures below are only the tokens this ` +
+        `device recorded in each window.` +
+        // A 429 is not an account problem, and reads like one without saying so.
+        (live?.reason === 'rate-limited' ? ' This resolves on its own; nothing is wrong with your account.' : '')
     }
 
     const sum = summarize(events, r, { costEstimated: true })
