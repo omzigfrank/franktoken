@@ -186,9 +186,10 @@ export default {
       base.windows = w
     }
 
-    const sum = summarize(events, r, { costEstimated: true })
+    const sum = summarize(events, r, { costEstimated: true, defaultModel: 'gpt-5-codex' })
     base.tokens = sum.tokens
     base.cost = sum.cost
+    base.noCache = sum.noCache
     base.series = sum.series
     base.range = sum.range
     base.sessions = buildSessions(events, r, {
@@ -204,8 +205,8 @@ export default {
     // Models with zero tokens inside the range are dropped.
     base.byModel = {}
     for (const mName of models) {
-      const ms = summarize(events.filter((e) => e.model === mName), r, { costEstimated: true })
-      if (ms.tokens.total > 0) base.byModel[mName] = { tokens: ms.tokens, cost: ms.cost, series: ms.series }
+      const ms = summarize(events.filter((e) => e.model === mName), r, { costEstimated: true, defaultModel: 'gpt-5-codex' })
+      if (ms.tokens.total > 0) base.byModel[mName] = { tokens: ms.tokens, cost: ms.cost, series: ms.series, noCache: ms.noCache }
     }
     base.meta.models = models.filter((m) => base.byModel[m])
     base.meta.model = base.meta.models[0] || base.meta.model

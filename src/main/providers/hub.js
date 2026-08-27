@@ -53,8 +53,43 @@ function sessionEvents(sessions) {
   return sessions.flatMap((session) => (session.requests || []).map((request) => ({
     ts: request.timestamp, input: request.input, cachedInput: request.cachedInput,
     cacheWrite: request.cacheWrite, output: request.output, reasoning: request.reasoning,
-    total: request.total, usd: request.costUsd
+    // Carried so the merged rollup can price the no-cache counterfactual per
+    // model rather than falling back to the generic rate for everything.
+    total: request.total, usd: request.costUsd, model: request.model || null
   })))
+}
+
+/**
+ * Add two no-cache counterfactuals. Only used when the merge could not rebuild
+ * a rollup from requests; the parts are already same-basis estimates, so
+ * summing them keeps the saving comparable.
+ */
+function addNoCache(a, b) {
+  if (!a) return b || null
+  if (!b) return a
+  const t = (x, k) => (x?.tokens?.[k] || 0)
+  const total = (a.cost?.total || 0) + (b.cost?.total || 0)
+  const baseline = (a.baseline?.total || 0) + (b.baseline?.total || 0)
+  return {
+    tokens: {
+      input: t(a, 'input') + t(b, 'input'),
+      cachedInput: 0,
+      cacheWrite: 0,
+      output: t(a, 'output') + t(b, 'output'),
+      reasoning: t(a, 'reasoning') + t(b, 'reasoning'),
+      total: t(a, 'total') + t(b, 'total')
+    },
+    cost: {
+      today: (a.cost?.today || 0) + (b.cost?.today || 0),
+      total,
+      currency: 'USD',
+      estimated: true
+    },
+    baseline: { today: (a.baseline?.today || 0) + (b.baseline?.today || 0), total: baseline },
+    savings: total - baseline,
+    multiple: baseline > 0 ? total / baseline : null,
+    series: a.series || b.series
+  }
 }
 
 /** Merge local and Hub snapshots while deduplicating matching session/request IDs. */
@@ -90,6 +125,7 @@ export function mergeSnapshots(local, remote, range) {
         currency: 'USD', estimated: existing.cost?.estimated || snapshot.cost?.estimated
       },
       series: rollup?.series || existing.series,
+      noCache: rollup?.noCache || addNoCache(existing.noCache, snapshot.noCache),
       sessions,
       coverage: {
         sourceType: 'local + hub',

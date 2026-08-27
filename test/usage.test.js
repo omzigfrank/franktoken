@@ -21,7 +21,17 @@ import {
 import { cliCandidates, loginCommand, linuxTerminal } from '../src/main/claudeAuth.js'
 import { codexCumulativeUsage, codexUsageDelta } from '../src/main/providers/codex.js'
 import { estimateTextTokens, chatgptConversationEvents } from '../src/main/providers/chatgpt.js'
-import { summarize, priceFor, PRICING, resolvePreset, RANGE_PRESETS, normalizeRange } from '../src/main/providers/util.js'
+import {
+  summarize,
+  priceFor,
+  PRICING,
+  resolvePreset,
+  RANGE_PRESETS,
+  normalizeRange,
+  estimateCost,
+  estimateCostNoCache,
+  tokensWithoutCache
+} from '../src/main/providers/util.js'
 import { buildSessions } from '../src/main/providers/sessions.js'
 import { mergeSnapshots } from '../src/main/providers/hub.js'
 import {
@@ -919,4 +929,100 @@ test('the charting series is capped and still ends at the newest point', () => {
   // Under the cap nothing is touched.
   const small = seriesFor(history.slice(-50), 'five_hour', 24 * 3_600_000, now)
   assert.equal(small.length, 50)
+})
+
+// --- without-cache counterfactual ---------------------------------------- //
+
+test('dropping the cache re-prices prompt tokens without changing the count', () => {
+  const usage = { input: 1_000, output: 500, cacheWrite: 4_000, cacheRead: 95_000 }
+  const model = 'claude-sonnet-5' // input 3, output 15, cacheWrite 3.75, cacheRead 0.3
+
+  const withCache = estimateCost(usage, model)
+  const without = estimateCostNoCache(usage, model)
+
+  // With cache: 1k*3 + 500*15 + 4k*3.75 + 95k*0.3 = 3000+7500+15000+28500 per 1M
+  assert.equal(Number(withCache.toFixed(6)), 0.054)
+  // Without: every prompt token (100k) at the plain input rate, output unchanged.
+  assert.equal(Number(without.toFixed(6)), 0.3075)
+  assert.ok(without > withCache, 'no cache is the expensive world, always')
+
+  // The point the UI has to state plainly: the same tokens were sent either
+  // way, so the total must not move.
+  const tokens = { input: 1_000, cachedInput: 95_000, cacheWrite: 4_000, output: 500, reasoning: 0, total: 100_500 }
+  const nc = tokensWithoutCache(tokens)
+  assert.equal(nc.total, tokens.total)
+  assert.equal(nc.input, 100_000, 'every prompt token becomes uncached input')
+  assert.equal(nc.cachedInput, 0)
+  assert.equal(nc.cacheWrite, 0)
+  assert.equal(nc.output, tokens.output)
+})
+
+test('summarize reports the no-cache counterfactual against its own baseline', () => {
+  const now = Date.now()
+  const range = { from: now - 3_600_000, to: now + 1_000, granularity: 'hour' }
+  const events = [
+    {
+      ts: now - 60_000,
+      model: 'claude-sonnet-5',
+      input: 1_000,
+      cachedInput: 95_000,
+      cacheWrite: 4_000,
+      output: 500,
+      total: 100_500,
+      // Deliberately NOT the estimate: a provider-billed figure. The saving
+      // must be measured against summarize's own baseline, not against this,
+      // or the two numbers would come from different price bases.
+      usd: 999
+    }
+  ]
+
+  const sum = summarize(events, range)
+  assert.equal(sum.cost.total, 999, 'the real cost is passed through untouched')
+  assert.equal(Number(sum.noCache.cost.total.toFixed(6)), 0.3075)
+  assert.equal(Number(sum.noCache.baseline.total.toFixed(6)), 0.054)
+  assert.equal(Number(sum.noCache.savings.toFixed(6)), 0.2535)
+  assert.ok(sum.noCache.multiple > 5.6 && sum.noCache.multiple < 5.7, sum.noCache.multiple)
+  assert.equal(sum.noCache.tokens.total, sum.tokens.total, 'token volume is identical')
+  assert.equal(sum.noCache.series.costByDay.length, 1)
+  assert.equal(
+    sum.noCache.series.costByDay[0].date,
+    sum.series.costByDay[0].date,
+    'both cost series bucket identically'
+  )
+})
+
+test('a range with no cached tokens reports no saving rather than a fake one', () => {
+  const now = Date.now()
+  const range = { from: now - 3_600_000, to: now + 1_000, granularity: 'hour' }
+  const events = [
+    { ts: now - 1_000, model: 'gpt-5', input: 2_000, cachedInput: 0, cacheWrite: 0, output: 100, total: 2_100, usd: 0.0035 }
+  ]
+  const sum = summarize(events, range)
+  assert.equal(sum.noCache.savings, 0)
+  assert.equal(sum.noCache.multiple, 1)
+  assert.equal(sum.noCache.tokens.input, 2_000)
+})
+
+test('events with no model fall back to the caller-declared default price', () => {
+  const now = Date.now()
+  const range = { from: now - 3_600_000, to: now + 1_000, granularity: 'hour' }
+  const events = [{ ts: now - 1_000, input: 0, cachedInput: 10_000, cacheWrite: 0, output: 0, total: 10_000, usd: 0 }]
+
+  const guessed = summarize(events, range, { defaultModel: 'claude-opus-4-1' })
+  // 10k cache-read tokens re-billed at the opus-4-1 input rate of $15/1M.
+  assert.equal(Number(guessed.noCache.cost.total.toFixed(6)), 0.15)
+
+  // Without a default it still produces a figure from the fallback table
+  // rather than dropping the comparison entirely.
+  const generic = summarize(events, range)
+  assert.equal(Number(generic.noCache.cost.total.toFixed(6)), 0.03)
+})
+
+test('an empty range leaves the multiple null instead of dividing by zero', () => {
+  const now = Date.now()
+  const sum = summarize([], { from: now - 3_600_000, to: now, granularity: 'hour' })
+  assert.equal(sum.noCache.cost.total, 0)
+  assert.equal(sum.noCache.multiple, null)
+  assert.equal(sum.noCache.savings, 0)
+  assert.deepEqual(sum.noCache.series.costByDay, [])
 })

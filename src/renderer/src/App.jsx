@@ -77,12 +77,12 @@ export default function App() {
           {/* Keyed per view so a crash in one does not poison the others, and
               switching views clears the boundary rather than sticking. */}
           <ErrorBoundary key={view} label={view}>
-            {view === 'overview' && <Overview snapshots={snapshots} sessions={sessions} onPick={setView} rangeLbl={label} />}
+            {view === 'overview' && <Overview snapshots={snapshots} sessions={sessions} onPick={setView} rangeLbl={label} settings={settings} />}
             {view === 'sessions' && <SessionExplorer sessions={sessions} />}
             {view === 'compare' && <ModelCompare sessions={sessions} />}
             {view === 'sources' && <Sources snapshots={snapshots} sessions={sessions} />}
             {view === 'settings' && <Settings settings={settings} onChange={changeSettings} />}
-            {snapshots.filter((snapshot) => snapshot.id === view).map((snapshot) => <ProviderView key={snapshot.id} s={snapshot} rangeLbl={label} />)}
+            {snapshots.filter((snapshot) => snapshot.id === view).map((snapshot) => <ProviderView key={snapshot.id} s={snapshot} rangeLbl={label} settings={settings} />)}
             {!snapshots.length && view === 'overview' && <div className="empty-state">Building the intelligence fabric…</div>}
           </ErrorBoundary>
         </main>

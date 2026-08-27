@@ -62,6 +62,42 @@ export function estimateCost(usage, model) {
   )
 }
 
+/**
+ * The same estimate for a world without prompt caching.
+ *
+ * Worth being precise about what changes, because it is easy to assume the
+ * token COUNT would fall. It would not. Every request already sends its whole
+ * prompt; caching only changes how the provider bills those tokens, splitting
+ * them into `input` (fresh), `cacheWrite` (newly cached, ~1.25x) and
+ * `cacheRead` (replayed from cache, ~0.1x). Drop the cache and the identical
+ * prompt tokens are still sent — they are simply all billed as fresh input.
+ *
+ * So the counterfactual re-prices input + cacheWrite + cacheRead at the plain
+ * input rate and leaves output alone. The total token count is untouched.
+ */
+export function estimateCostNoCache(usage, model) {
+  const p = priceFor(model)
+  const prompt = (usage.input || 0) + (usage.cacheWrite || 0) + (usage.cacheRead || 0)
+  return (prompt * p.input + (usage.output || 0) * p.output) / 1_000_000
+}
+
+/**
+ * Re-categorize a token breakdown as it would have been billed with no cache:
+ * every prompt token counts as uncached input. `total` is deliberately
+ * unchanged — the same content was sent either way.
+ */
+export function tokensWithoutCache(tokens = {}) {
+  const input = (tokens.input || 0) + (tokens.cacheWrite || 0) + (tokens.cachedInput || 0)
+  return {
+    input,
+    cachedInput: 0,
+    cacheWrite: 0,
+    output: tokens.output || 0,
+    reasoning: tokens.reasoning || 0,
+    total: tokens.total || 0
+  }
+}
+
 /** YYYY-MM-DD in local time. */
 export function dayKey(ms) {
   const d = new Date(ms)
@@ -118,22 +154,48 @@ export function bucketOf(ms, granularity) {
 
 /**
  * Aggregate granular events within a range.
- * event: { ts, total, input, output, cachedInput, reasoning, usd }
- * Returns { tokens, cost:{today,total,currency,estimated}, series:{tokensByDay,costByDay}, range }
+ * event: { ts, total, input, output, cachedInput, cacheWrite, reasoning, usd, model }
+ * Returns { tokens, cost:{today,total,currency,estimated}, series:{tokensByDay,costByDay}, noCache, range }
+ *
+ * `noCache` is the same range priced as if prompt caching had never been used
+ * — see estimateCostNoCache. It carries its own `baseline`, the WITH-cache
+ * cost recomputed from the very same price table, so the saving it reports is
+ * a comparison of two numbers derived the same way. Comparing against
+ * `cost.total` instead would be unsound wherever that came from a provider
+ * bill rather than this estimate.
  */
-export function summarize(events, range, { costEstimated = true } = {}) {
+export function summarize(events, range, { costEstimated = true, defaultModel = null } = {}) {
   const r = normalizeRange(range)
   const tokens = { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 }
   let costTotal = 0
   let costToday = 0
+  let ncTotal = 0
+  let ncToday = 0
+  let baseTotal = 0
+  let baseToday = 0
   const todayKey = dayKey(Date.now())
   const tokenBuckets = new Map() // key -> {label, total}
   const costBuckets = new Map()
+  const ncBuckets = new Map()
 
   for (const e of events) {
+    const usage = {
+      input: e.input || 0,
+      output: e.output || 0,
+      cacheWrite: e.cacheWrite || 0,
+      cacheRead: e.cachedInput || 0
+    }
+    const model = e.model || defaultModel
+    const ncUsd = estimateCostNoCache(usage, model)
+    const baseUsd = estimateCost(usage, model)
+
     if (e.ts < r.from || e.ts > r.to) {
       // still count "today" cost for the tray, independent of selected range
-      if (dayKey(e.ts) === todayKey) costToday += e.usd || 0
+      if (dayKey(e.ts) === todayKey) {
+        costToday += e.usd || 0
+        ncToday += ncUsd
+        baseToday += baseUsd
+      }
       continue
     }
     tokens.input += e.input || 0
@@ -143,7 +205,13 @@ export function summarize(events, range, { costEstimated = true } = {}) {
     tokens.reasoning += e.reasoning || 0
     tokens.total += e.total || 0
     costTotal += e.usd || 0
-    if (dayKey(e.ts) === todayKey) costToday += e.usd || 0
+    ncTotal += ncUsd
+    baseTotal += baseUsd
+    if (dayKey(e.ts) === todayKey) {
+      costToday += e.usd || 0
+      ncToday += ncUsd
+      baseToday += baseUsd
+    }
 
     const b = bucketOf(e.ts, r.granularity)
     const tb = tokenBuckets.get(b.key) || { label: b.label, total: 0 }
@@ -152,19 +220,32 @@ export function summarize(events, range, { costEstimated = true } = {}) {
     const cb = costBuckets.get(b.key) || { label: b.label, cost: 0 }
     cb.cost += e.usd || 0
     costBuckets.set(b.key, cb)
+    const nb = ncBuckets.get(b.key) || { label: b.label, cost: 0 }
+    nb.cost += ncUsd
+    ncBuckets.set(b.key, nb)
   }
 
-  const tokensByDay = [...tokenBuckets.entries()]
-    .map(([date, v]) => ({ date, label: v.label, total: v.total }))
-    .sort((a, b) => a.date.localeCompare(b.date))
-  const costByDay = [...costBuckets.entries()]
-    .map(([date, v]) => ({ date, label: v.label, cost: v.cost }))
-    .sort((a, b) => a.date.localeCompare(b.date))
+  const byDay = (m, field) =>
+    [...m.entries()]
+      .map(([date, v]) => ({ date, label: v.label, [field]: v[field] }))
+      .sort((a, b) => a.date.localeCompare(b.date))
+  const tokensByDay = byDay(tokenBuckets, 'total')
+  const costByDay = byDay(costBuckets, 'cost')
 
   return {
     tokens,
     cost: { today: costToday, total: costTotal, currency: 'USD', estimated: costEstimated },
     series: { tokensByDay, costByDay },
+    noCache: {
+      tokens: tokensWithoutCache(tokens),
+      cost: { today: ncToday, total: ncTotal, currency: 'USD', estimated: true },
+      baseline: { today: baseToday, total: baseTotal },
+      savings: ncTotal - baseTotal,
+      // How many times more expensive the range would have been. Null rather
+      // than Infinity or 1 when there is nothing to compare.
+      multiple: baseTotal > 0 ? ncTotal / baseTotal : null,
+      series: { costByDay: byDay(ncBuckets, 'cost') }
+    },
     range: r
   }
 }

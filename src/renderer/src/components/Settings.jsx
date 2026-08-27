@@ -26,6 +26,20 @@ export default function Settings({ settings, onChange }) {
             <label>Launch at login</label>
             <Switch on={settings.launchAtLogin} onClick={() => onChange({ launchAtLogin: !settings.launchAtLogin })} />
           </div>
+          <div className="setrow">
+            <label>
+              Show figures without cache leverage
+              <small>
+                Adds a side-by-side &ldquo;no prompt cache&rdquo; view. The token total is the same
+                either way &mdash; the same prompt is sent regardless &mdash; but every cached token
+                is re-priced as fresh input, which is where the difference shows up.
+              </small>
+            </label>
+            <Switch
+              on={settings.showWithoutCache}
+              onClick={() => onChange({ showWithoutCache: !settings.showWithoutCache })}
+            />
+          </div>
           <div className="setrow setrow-stack">
             <label>FrankToken Hub URL <small>Merge telemetry from every configured device</small></label>
             <input

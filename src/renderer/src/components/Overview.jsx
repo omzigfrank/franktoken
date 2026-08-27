@@ -7,7 +7,7 @@ function Delta({ children, tone = 'good' }) {
   return <span className={`delta ${tone}`}>{children}</span>
 }
 
-export default function Overview({ snapshots, sessions, onPick, rangeLbl = '30D' }) {
+export default function Overview({ snapshots, sessions, onPick, rangeLbl = '30D', settings = null }) {
   const live = snapshots.filter((snapshot) => snapshot.available)
   const totalTokens = live.reduce((sum, snapshot) => sum + snapshot.tokens.total, 0)
   const totalCost = live.reduce((sum, snapshot) => sum + snapshot.cost.total, 0)
@@ -15,6 +15,12 @@ export default function Overview({ snapshots, sessions, onPick, rangeLbl = '30D'
   const activeModels = new Set(sessions.flatMap((session) => session.models || [])).size
   const cacheTokens = live.reduce((sum, snapshot) => sum + snapshot.tokens.cachedInput, 0)
   const cacheRate = totalTokens ? (cacheTokens / totalTokens) * 100 : 0
+  // Opt-in from Settings: what the same range would have cost with no prompt
+  // cache. Both figures come from the same price table so the delta is sound.
+  const showNoCache = !!settings?.showWithoutCache
+  const noCacheCost = live.reduce((sum, s) => sum + (s.noCache?.cost?.total || 0), 0)
+  const cachedBaseline = live.reduce((sum, s) => sum + (s.noCache?.baseline?.total || 0), 0)
+  const cacheSaved = noCacheCost - cachedBaseline
 
   const byDate = new Map()
   for (const snapshot of live) {
@@ -48,7 +54,7 @@ export default function Overview({ snapshots, sessions, onPick, rangeLbl = '30D'
       <section className="kpi-strip">
         <div className="glass-card metric-card violet"><span>Token volume</span><strong>{fmtTokens(totalTokens)}</strong><small>input + cache + output</small><Delta>{requestCount} requests</Delta></div>
         <div className="glass-card metric-card cyan"><span>USD consumption</span><strong>{fmtUsd(totalCost)}</strong><small>{live.some((snapshot) => snapshot.cost.estimated) ? 'estimated where billing is unavailable' : 'provider billed'}</small><Delta tone="cyan">{fmtUsd(totalCost / Math.max(1, sessions.length))} / session</Delta></div>
-        <div className="glass-card metric-card pink"><span>Cache leverage</span><strong>{cacheRate.toFixed(1)}%</strong><small>{fmtTokens(cacheTokens)} cache-read tokens</small><Delta tone="pink">context reused</Delta></div>
+        <div className="glass-card metric-card pink"><span>Cache leverage</span><strong>{showNoCache && cacheSaved > 0 ? fmtUsd(cacheSaved) : `${cacheRate.toFixed(1)}%`}</strong><small>{showNoCache && cacheSaved > 0 ? `saved vs ${fmtUsd(noCacheCost)} with no cache` : `${fmtTokens(cacheTokens)} cache-read tokens`}</small><Delta tone="pink">{showNoCache && cacheSaved > 0 ? `${cacheRate.toFixed(1)}% of tokens cache-read` : 'context reused'}</Delta></div>
         <div className="glass-card metric-card lime"><span>Model surface</span><strong>{activeModels}</strong><small>models observed in range</small><Delta tone="lime">{live.length} products live</Delta></div>
       </section>
 

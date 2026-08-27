@@ -252,3 +252,13 @@ button { color: inherit; }
 .crash-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .crash-actions .rp-apply { padding: 8px 15px; font-size: 11px; }
 .crash-detail { margin: 4px 0 0; padding: 11px; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; background: #0b0f18; color: #9aa6bd; font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+/* Without-cache counterfactual (Settings -> "Show figures without cache leverage").
+   Visually subordinate to the real figures above it: it is a comparison, not the bill. */
+.nocache { margin-top: 12px; padding-top: 11px; border-top: 1px dashed var(--line); }
+.nocache-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.nocache-head h4 { margin: 0; color: var(--muted); font-size: 9px; letter-spacing: .8px; text-transform: uppercase; }
+.nocache .kpi { background: rgba(247,185,85,.045); border-color: rgba(247,185,85,.16); }
+/* Toggle rows carry an explanation under the label; keep the switch on the right. */
+.setrow label small { display: block; margin-top: 4px; color: var(--faint); font-weight: 400; line-height: 1.55; }
+.setrow > label { flex: 1 1 auto; min-width: 0; }
